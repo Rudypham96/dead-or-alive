@@ -1,5 +1,18 @@
 # Dead or Alive — Session Handoff Document
-*Created: 2026-06-05 | Updated: 2026-06-11 with full-stack build*
+*Created: 2026-06-05 | Updated: 2026-06-11 with full-stack build + trading mechanics*
+
+---
+
+## ⚡ UPDATE 2026-06-11 (later) — TRADING MECHANICS SHIPPED
+
+Four more features, all tested (52-check e2e suite, all passing) and verified in the browser:
+
+1. **Sell / exit positions** — every open position in Portfolio has a working Close button. Sells all shares at the current price, 2% fee on proceeds, net back to balance, line moves the other way. Closed positions show a CLOSED badge in Resolved. This unlocks continuous trading volume — every exit is a fee event.
+2. **Admin market creation** — "+ Create market" form in `/admin`: name, category, starting odds, resolution window. Market goes live instantly (no redeploy) with synthesized chart history. The open-markets queue is newest-first with a search filter.
+3. **Resolution history + sources** — resolving now takes a public reason + source URL. New public page (footer → "Resolution History") lists every settled market with outcome, reason, source link, winners/losers, paid out, fees. Resolved market pages show a banner with the reason. This is the trust layer.
+4. **Limit orders** — Market | Limit toggle in the bet ticket. Limit orders escrow the stake and auto-fill when the line crosses the limit (each bet/sell re-checks resting orders). Marketable limits fill instantly. Portfolio has a "Limit orders" card with cancel (refunds escrow). Resolution refunds unfilled orders.
+
+Also fixed: `?m=<id>` deep links were being wiped on first render (broke all shareable links) — now they work, including for admin-created markets.
 
 ---
 

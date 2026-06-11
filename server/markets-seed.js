@@ -153,7 +153,7 @@ export const CATEGORY_LIST = [
   "Enterprise Software", "Publishing & Media", "Data & Transcription",
 ];
 
-function makeSeries(rng, end, len = 60, vol = 0.06) {
+export function makeSeries(rng, end, len = 60, vol = 0.06) {
   const arr = new Array(len);
   arr[len - 1] = end;
   for (let i = len - 2; i >= 0; i--) {
@@ -166,7 +166,7 @@ function makeSeries(rng, end, len = 60, vol = 0.06) {
   return arr;
 }
 
-function slugify(s) {
+export function slugify(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 

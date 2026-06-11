@@ -23,11 +23,17 @@ import {
 } from "./auth.js";
 import {
   placeBet,
+  closeBet,
   resolveMarket,
+  createMarket,
   getMarket,
   getPortfolio,
   getLeaderboard,
   getActivity,
+  getResolutions,
+  placeOrder,
+  cancelOrder,
+  getOrders,
   createChallenge,
   acceptChallenge,
   FEE_RATE,
@@ -139,9 +145,41 @@ app.post(
   })
 );
 
+// Sell an open position back at the current price (2% fee on proceeds).
+app.post(
+  "/api/bets/:id/close",
+  requireUser,
+  wrap((req, res) => {
+    ok(res, closeBet(req.user, Number(req.params.id)));
+  })
+);
+
 app.get("/api/portfolio", requireUser, (req, res) => {
   ok(res, getPortfolio(req.user.id));
 });
+
+// ---------------- Limit orders ----------------
+app.get("/api/orders", requireUser, (req, res) => ok(res, { orders: getOrders(req.user.id) }));
+
+app.post(
+  "/api/orders",
+  requireUser,
+  wrap((req, res) => {
+    const { marketId, side, limitPrice, stake } = req.body || {};
+    ok(res, placeOrder(req.user, Number(marketId), side, Number(limitPrice), Number(stake)));
+  })
+);
+
+app.delete(
+  "/api/orders/:id",
+  requireUser,
+  wrap((req, res) => {
+    ok(res, cancelOrder(req.user, Number(req.params.id)));
+  })
+);
+
+// ---------------- Public resolution history ----------------
+app.get("/api/resolutions", (req, res) => ok(res, { resolutions: getResolutions() }));
 
 // ---------------- Leaderboard / Activity (live-contract compatible) ----------------
 app.get("/api/leaderboard", (req, res) => ok(res, { leaderboard: getLeaderboard() }));
@@ -239,8 +277,18 @@ app.post(
   "/api/admin/resolve",
   requireAdmin,
   wrap((req, res) => {
-    const { marketId, outcome } = req.body || {};
-    ok(res, { resolved: resolveMarket(Number(marketId), outcome) });
+    const { marketId, outcome, reason, sourceUrl } = req.body || {};
+    ok(res, { resolved: resolveMarket(Number(marketId), outcome, reason, sourceUrl) });
+  })
+);
+
+// Create a new market live, no redeploy.
+app.post(
+  "/api/admin/markets",
+  requireAdmin,
+  wrap((req, res) => {
+    const { name, category, death, daysLeft, volume } = req.body || {};
+    ok(res, { market: createMarket({ name, category, death, daysLeft, volume }) });
   })
 );
 

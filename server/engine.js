@@ -8,6 +8,7 @@
 // (this is a transparent price-impact model, not a full AMM — see README).
 
 import { db, marketRowToApi } from "./db.js";
+import { mulberry32, makeSeries, slugify, logoFor } from "./markets-seed.js";
 
 export const FEE_RATE = 0.02;
 const IMPACT_SENSITIVITY = 0.6;
@@ -73,17 +74,74 @@ export function placeBet(user, marketId, side, stakeRaw, paper = false) {
   });
 
   const { bet, balance } = tx();
+  matchOrders(marketId); // the line moved — fill any limit orders that are now marketable
   return { bet: betToApi(bet, market.name), market: marketRowToApi(getMarket(marketId)), balance };
 }
 
-// Resolve a market. Pays winners (minus 2% fee), marks losers, settles linked
-// challenges. Returns a settlement summary. Idempotent-guarded: refuses if already resolved.
-export function resolveMarket(marketId, outcomeRaw) {
+// Close an open position early: sell all shares back at the current price.
+// Proceeds = shares × price; 2% fee on gross proceeds (consistent with the
+// resolution model — the platform takes 2% of whatever comes back to you).
+// Selling pushes the line the other way, same impact model as buying.
+export function closeBet(user, betId) {
+  const bet = db.prepare("SELECT * FROM bets WHERE id = ?").get(betId);
+  if (!bet) throw new Error("position not found");
+  if (bet.user_id !== user.id) throw new Error("not your position");
+  if (bet.status !== "open") throw new Error("position already settled");
+
+  const market = getMarket(bet.market_id);
+  if (!market) throw new Error("market not found");
+  if (market.status !== "open") throw new Error("market is resolved — position will settle at resolution");
+
+  const price = bet.side === "DEAD" ? market.death : market.survives;
+  const proceeds = bet.shares * price;
+  const fee = round2(proceeds * FEE_RATE);
+  const net = round2(proceeds - fee);
+
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE bets SET status='closed', sold_price=?, gross_payout=?, fee=?, net_payout=?, resolved_at=?
+       WHERE id=?`
+    ).run(price, round2(proceeds), fee, net, now(), bet.id);
+
+    if (!bet.paper) {
+      db.prepare("UPDATE users SET balance = ROUND(balance + ?, 2) WHERE id = ?").run(net, user.id);
+    }
+
+    // selling DEAD = pressure toward ALIVE and vice versa
+    const newDeath = applyPriceImpact(market, bet.side === "DEAD" ? "ALIVE" : "DEAD", proceeds);
+    const series = JSON.parse(market.series);
+    series.push(newDeath);
+    while (series.length > 60) series.shift();
+    const change24h = newDeath - series[Math.max(0, series.length - 24)];
+    db.prepare(
+      `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?, volume = volume + ? WHERE id = ?`
+    ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, proceeds, bet.market_id);
+
+    return db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
+  });
+
+  const balance = tx();
+  matchOrders(bet.market_id);
+  return {
+    closed: { id: bet.id, market: market.name, side: bet.side, shares: round2(bet.shares),
+      soldPrice: price, grossProceeds: round2(proceeds), fee, netProceeds: net,
+      pnl: round2(net - bet.stake) },
+    market: marketRowToApi(getMarket(bet.market_id)),
+    balance,
+  };
+}
+
+// Resolve a market. Pays winners (minus 2% fee), marks losers, refunds open
+// limit orders, settles linked challenges, and records the why (reason +
+// source URL) for the public resolution history. Refuses if already resolved.
+export function resolveMarket(marketId, outcomeRaw, reason = null, sourceUrl = null) {
   const outcome = String(outcomeRaw || "").toUpperCase();
   if (outcome !== "DEAD" && outcome !== "ALIVE") throw new Error("outcome must be DEAD or ALIVE");
   const market = getMarket(marketId);
   if (!market) throw new Error("market not found");
   if (market.status === "resolved") throw new Error("market already resolved");
+  reason = reason ? String(reason).trim().slice(0, 500) : null;
+  sourceUrl = sourceUrl ? String(sourceUrl).trim().slice(0, 300) : null;
 
   const tx = db.transaction(() => {
     const openBets = db.prepare("SELECT * FROM bets WHERE market_id = ? AND status = 'open'").all(marketId);
@@ -114,8 +172,19 @@ export function resolveMarket(marketId, outcomeRaw) {
       }
     }
 
-    db.prepare("UPDATE markets SET status='resolved', outcome=?, resolved_at=?, death=?, survives=? WHERE id=?")
-      .run(outcome, now(), outcome === "DEAD" ? 1 : 0, outcome === "DEAD" ? 0 : 1, marketId);
+    // refund any unfilled limit orders — their escrow goes back to the owner
+    const openOrders = db
+      .prepare("SELECT * FROM orders WHERE market_id = ? AND status = 'open'")
+      .all(marketId);
+    for (const o of openOrders) {
+      db.prepare("UPDATE users SET balance = ROUND(balance + ?, 2) WHERE id = ?").run(o.stake, o.user_id);
+      db.prepare("UPDATE orders SET status='cancelled', settled_at=? WHERE id=?").run(now(), o.id);
+    }
+
+    db.prepare(
+      `UPDATE markets SET status='resolved', outcome=?, resolved_at=?, death=?, survives=?,
+         resolution_reason=?, resolution_source=? WHERE id=?`
+    ).run(outcome, now(), outcome === "DEAD" ? 1 : 0, outcome === "DEAD" ? 0 : 1, reason, sourceUrl, marketId);
 
     const challengesSettled = settleChallengesForMarket(marketId, outcome);
 
@@ -125,6 +194,7 @@ export function resolveMarket(marketId, outcomeRaw) {
       winners,
       losers,
       challengesSettled,
+      ordersRefunded: openOrders.length,
       totalGrossPayout: round2(totalGross),
       totalFeesCollected: round2(totalFees),
       totalNetPaid: round2(totalNet),
@@ -238,7 +308,8 @@ export function getPortfolio(userId) {
       const value = r.shares * currentPrice;
       open.push({ ...api, currentPrice, value: round2(value), pnl: round2(value - r.stake) });
     } else {
-      resolved.push({ ...api, outcome: r.status === "won" ? "WON" : "LOST", pnl: round2(r.net_payout - r.stake) });
+      const outcome = r.status === "won" ? "WON" : r.status === "lost" ? "LOST" : "CLOSED";
+      resolved.push({ ...api, outcome, soldPrice: r.sold_price || null, pnl: round2(r.net_payout - r.stake) });
     }
   }
   return { open, resolved };
@@ -284,5 +355,200 @@ export function getActivity(limit = 50) {
     side: r.side,
     amt: round2(r.stake),
     at: r.created_at,
+  }));
+}
+
+// ---- Admin market creation ----
+// New markets go live instantly — no redeploy. Series history is synthesized
+// backward from the starting odds so charts render from day one.
+export function createMarket({ name, category, death, daysLeft, volume }) {
+  name = String(name || "").trim().slice(0, 80);
+  category = String(category || "").trim().slice(0, 50) || "Uncategorized";
+  death = Number(death);
+  daysLeft = Math.round(Number(daysLeft));
+  volume = Number(volume) || 0;
+  if (!name) throw new Error("market name required");
+  if (!Number.isFinite(death) || death < 0.02 || death > 0.98)
+    throw new Error("starting DEAD odds must be between 2% and 98%");
+  if (!Number.isFinite(daysLeft) || daysLeft < 1 || daysLeft > 2000)
+    throw new Error("resolution window must be 1–2000 days");
+  const dup = db.prepare("SELECT id FROM markets WHERE LOWER(name) = LOWER(?) AND status='open'").get(name);
+  if (dup) throw new Error(`an open market for "${name}" already exists (id ${dup.id})`);
+
+  const tx = db.transaction(() => {
+    const id = db.prepare("SELECT COALESCE(MAX(id), -1) + 1 AS next FROM markets").get().next;
+    const rng = mulberry32(0x9e3779b1 ^ (id * 2654435761));
+    const series = makeSeries(rng, death, 60, 0.05);
+    const change24h = death - series[Math.max(0, series.length - 24)];
+    const logo = logoFor(name);
+    const vol = volume > 0 ? volume : Math.round(50000 + rng() * 150000);
+    db.prepare(
+      `INSERT INTO markets
+         (id, slug, category, name, death, survives, base_death, series, change24h,
+          volume, traders, days_left, logo_hue, logo_initials, liquidity, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`
+    ).run(
+      id, slugify(name) + "-" + id, category, name, death, 1 - death, death,
+      JSON.stringify(series), change24h, vol, 0, daysLeft, logo.hue, logo.initials,
+      Math.max(vol * 0.05, 25000)
+    );
+    return id;
+  });
+
+  return marketRowToApi(getMarket(tx()));
+}
+
+// ---- Limit orders ----
+// A limit order escrows the stake and fills when the side's price trades at or
+// below the limit. Fills execute at the CURRENT price (at-or-better, never
+// worse). Each fill is its own transaction and itself moves the line, so the
+// match loop re-reads the market every iteration.
+
+export function placeOrder(user, marketId, side, limitPriceRaw, stakeRaw) {
+  side = String(side || "").toUpperCase();
+  if (side !== "DEAD" && side !== "ALIVE") throw new Error("side must be DEAD or ALIVE");
+  const limitPrice = Number(limitPriceRaw);
+  if (!Number.isFinite(limitPrice) || limitPrice < 0.02 || limitPrice > 0.98)
+    throw new Error("limit price must be between 2% and 98%");
+  const stake = Number(stakeRaw);
+  if (!Number.isFinite(stake) || stake <= 0) throw new Error("stake must be positive");
+
+  const market = getMarket(marketId);
+  if (!market || market.status !== "open") throw new Error("market not open");
+
+  const tx = db.transaction(() => {
+    const fresh = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id);
+    if (fresh.balance < stake) throw new Error("insufficient balance");
+    db.prepare("UPDATE users SET balance = ROUND(balance - ?, 2) WHERE id = ?").run(stake, user.id);
+    const info = db
+      .prepare(
+        `INSERT INTO orders (user_id, market_id, side, limit_price, stake, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`
+      )
+      .run(user.id, marketId, side, limitPrice, stake, now());
+    return info.lastInsertRowid;
+  });
+
+  const orderId = tx();
+  matchOrders(marketId); // fills immediately if already marketable
+  const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId);
+  return {
+    order: orderToApi(order, market.name),
+    balance: db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance,
+    market: marketRowToApi(getMarket(marketId)),
+  };
+}
+
+export function cancelOrder(user, orderId) {
+  const o = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId);
+  if (!o) throw new Error("order not found");
+  if (o.user_id !== user.id) throw new Error("not your order");
+  if (o.status !== "open") throw new Error("order is not open");
+
+  const tx = db.transaction(() => {
+    db.prepare("UPDATE users SET balance = ROUND(balance + ?, 2) WHERE id = ?").run(o.stake, o.user_id);
+    db.prepare("UPDATE orders SET status='cancelled', settled_at=? WHERE id=?").run(now(), o.id);
+    return db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
+  });
+  return { cancelled: o.id, refunded: o.stake, balance: tx() };
+}
+
+// Fill loop: oldest marketable order first; each fill moves the line, so
+// re-check against fresh prices every round. Capped to avoid pathological spins.
+export function matchOrders(marketId) {
+  let filled = 0;
+  for (let i = 0; i < 50; i++) {
+    const market = getMarket(marketId);
+    if (!market || market.status !== "open") break;
+    const order = db
+      .prepare(
+        `SELECT * FROM orders WHERE market_id = ? AND status = 'open'
+           AND ((side = 'DEAD' AND ? <= limit_price) OR (side = 'ALIVE' AND ? <= limit_price))
+         ORDER BY created_at ASC LIMIT 1`
+      )
+      .get(marketId, market.death, market.survives);
+    if (!order) break;
+
+    const price = order.side === "DEAD" ? market.death : market.survives;
+    const shares = order.stake / price;
+    const tx = db.transaction(() => {
+      const info = db
+        .prepare(
+          `INSERT INTO bets (user_id, market_id, side, stake, price, shares, status, paper, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', 0, ?)`
+        )
+        .run(order.user_id, marketId, order.side, order.stake, price, shares, now());
+      db.prepare("UPDATE orders SET status='filled', bet_id=?, settled_at=? WHERE id=?")
+        .run(info.lastInsertRowid, now(), order.id);
+
+      const newDeath = applyPriceImpact(market, order.side, order.stake);
+      const series = JSON.parse(market.series);
+      series.push(newDeath);
+      while (series.length > 60) series.shift();
+      const change24h = newDeath - series[Math.max(0, series.length - 24)];
+      db.prepare(
+        `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?,
+           volume = volume + ?, traders = traders + 1 WHERE id = ?`
+      ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, order.stake, marketId);
+    });
+    tx();
+    filled++;
+  }
+  return filled;
+}
+
+function orderToApi(o, marketName) {
+  return {
+    id: o.id,
+    marketId: o.market_id,
+    market: marketName,
+    side: o.side,
+    limitPrice: o.limit_price,
+    stake: round2(o.stake),
+    status: o.status,
+    betId: o.bet_id || null,
+    createdAt: o.created_at,
+    settledAt: o.settled_at || null,
+  };
+}
+
+export function getOrders(userId) {
+  const rows = db
+    .prepare(
+      `SELECT o.*, m.name AS market_name FROM orders o JOIN markets m ON m.id = o.market_id
+       WHERE o.user_id = ? ORDER BY (o.status = 'open') DESC, o.created_at DESC LIMIT 50`
+    )
+    .all(userId);
+  return rows.map((o) => orderToApi(o, o.market_name));
+}
+
+// ---- Public resolution history ----
+// Every resolved market with its why, its source, and what was paid out.
+// This page is the trust layer: anyone can audit how markets settle.
+export function getResolutions() {
+  const rows = db
+    .prepare(
+      `SELECT m.*,
+              (SELECT COUNT(*) FROM bets b WHERE b.market_id = m.id AND b.status = 'won' AND b.paper = 0) AS winners,
+              (SELECT COUNT(*) FROM bets b WHERE b.market_id = m.id AND b.status = 'lost' AND b.paper = 0) AS losers,
+              (SELECT ROUND(COALESCE(SUM(b.net_payout), 0), 2) FROM bets b WHERE b.market_id = m.id AND b.status = 'won' AND b.paper = 0) AS total_paid,
+              (SELECT ROUND(COALESCE(SUM(b.fee), 0), 2) FROM bets b WHERE b.market_id = m.id AND b.status IN ('won','closed') AND b.paper = 0) AS total_fees
+       FROM markets m WHERE m.status = 'resolved' ORDER BY m.resolved_at DESC`
+    )
+    .all();
+  return rows.map((r) => ({
+    id: r.id,
+    slug: r.slug,
+    name: r.name,
+    category: r.category,
+    logo: { hue: r.logo_hue, initials: r.logo_initials },
+    outcome: r.outcome,
+    resolvedAt: r.resolved_at,
+    reason: r.resolution_reason || null,
+    sourceUrl: r.resolution_source || null,
+    winners: r.winners,
+    losers: r.losers,
+    totalPaid: r.total_paid,
+    totalFees: r.total_fees,
   }));
 }

@@ -117,10 +117,38 @@ CREATE TABLE IF NOT EXISTS challenges (
   resolved_at     INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL REFERENCES users(id),
+  market_id    INTEGER NOT NULL REFERENCES markets(id),
+  side         TEXT NOT NULL,                     -- 'DEAD' | 'ALIVE'
+  limit_price  REAL NOT NULL,                     -- max price (implied prob) willing to pay
+  stake        REAL NOT NULL,                     -- escrowed at placement
+  status       TEXT NOT NULL DEFAULT 'open',      -- 'open' | 'filled' | 'cancelled'
+  bet_id       INTEGER REFERENCES bets(id),       -- set when filled
+  created_at   INTEGER NOT NULL,
+  settled_at   INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_bets_user   ON bets(user_id);
 CREATE INDEX IF NOT EXISTS idx_bets_market ON bets(market_id);
 CREATE INDEX IF NOT EXISTS idx_comments_market ON comments(market_id);
+CREATE INDEX IF NOT EXISTS idx_orders_market ON orders(market_id, status);
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
 `);
+
+// Guarded migrations for DBs created before these columns existed.
+for (const ddl of [
+  "ALTER TABLE bets ADD COLUMN sold_price REAL",            // exit price when a position is closed early
+  "ALTER TABLE markets ADD COLUMN resolution_reason TEXT",  // why it resolved (transparency)
+  "ALTER TABLE markets ADD COLUMN resolution_source TEXT",  // source URL backing the resolution
+]) {
+  try {
+    db.exec(ddl);
+  } catch {
+    /* column already exists */
+  }
+}
 
 // ---- One-time market seed ----
 const marketCount = db.prepare("SELECT COUNT(*) AS n FROM markets").get().n;
@@ -177,5 +205,8 @@ export function marketRowToApi(row) {
     logo: { hue: row.logo_hue, initials: row.logo_initials },
     status: row.status,
     outcome: row.outcome,
+    resolvedAt: row.resolved_at || null,
+    resolutionReason: row.resolution_reason || null,
+    resolutionSource: row.resolution_source || null,
   };
 }

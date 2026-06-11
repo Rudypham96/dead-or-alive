@@ -17,7 +17,7 @@ npm start
 No build step, no database setup, no API keys. `npm start` creates the SQLite file and seeds 120 markets on first run.
 
 ```bash
-npm test     # 28-check end-to-end suite against a throwaway DB
+npm test     # 52-check end-to-end suite against a throwaway DB
 ```
 
 Requires **Node 22.5+** (uses the built-in `node:sqlite` module — no native compilation, no `better-sqlite3`).
@@ -48,12 +48,23 @@ test/e2e.js   boots the real server and drives the whole flow
 ### The money loop
 
 1. **Connect** — a wallet (MetaMask, etc.) or, with no wallet present, a frictionless guest login for testing. New accounts get **$1,000 in test house credits** (faucet — no deposits/withdrawals yet).
-2. **Bet** — buy DEAD or ALIVE shares at the current implied probability. `shares = stake / price`. The stake is debited immediately.
-3. **The line moves** — each bet nudges the market's odds toward the bought side, scaled by stake vs. the market's virtual liquidity. Big bets in thin markets move the line; small bets in deep markets barely do (realistic).
-4. **Resolve** — an admin resolves the market DEAD or ALIVE in the Resolution Console (`/admin`).
-5. **Payout** — winning shares settle at **$1.00 each**. A **2% fee is taken on gross winnings only** (Polymarket model). Losers pay nothing. Net is credited to the balance.
+2. **Bet** — buy DEAD or ALIVE shares at the current implied probability. `shares = stake / price`. The stake is debited immediately. Or place a **limit order**: pick a max price, the stake is escrowed, and the order fills automatically when the line trades at or below your limit (at the current price — at-or-better, never worse). Cancel any time for a full refund.
+3. **The line moves** — each bet (and each limit-order fill) nudges the market's odds toward the bought side, scaled by stake vs. the market's virtual liquidity. Big bets in thin markets move the line; small bets in deep markets barely do (realistic). Every price move re-checks resting limit orders.
+4. **Exit early or hold** — close any open position from the Portfolio at the current price. Proceeds = `shares × price`, minus the 2% fee on proceeds. Selling pushes the line the other way.
+5. **Resolve** — an admin resolves the market DEAD or ALIVE in the Resolution Console (`/admin`), recording a **public reason + source URL**. Unfilled limit orders are refunded automatically.
+6. **Payout** — winning shares settle at **$1.00 each**. A **2% fee is taken on gross winnings only** (Polymarket model). Losers pay nothing. Net is credited to the balance.
 
 `netPayout = winningShares × $1.00 × 0.98`
+
+The consistent fee rule everywhere: **the platform takes 2% of whatever comes back to you** — resolution payouts, early-exit proceeds, challenge pots. Losers never pay.
+
+### Trust layer
+
+`/api/resolutions` + the public **Resolution History** page (footer link) list every settled market with its outcome, the reason, the source URL, and the payout totals. Resolved markets also show a banner with the reason on their detail page.
+
+### Operating the platform
+
+Admins (at `/admin`) can **create new markets live** — name, category, starting odds, resolution window — with no redeploy. New markets appear instantly with a synthesized 60-point price history so charts render from the first second.
 
 ---
 
@@ -78,19 +89,25 @@ Mirrors the live Vercel deployment's contract so the two converge, then extends 
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/api/markets` | `{ markets, count }` — same shape as the live site |
-| GET | `/api/markets/:id` | `{ market }` |
+| GET | `/api/markets/:id` | `{ market }` (includes resolution reason/source once resolved) |
 | GET | `/api/auth/nonce?address=0x…` | `{ nonce, message }` to sign |
 | POST | `/api/auth/verify` | `{ address, signature }` → session |
 | POST | `/api/auth/dev` | `{ username }` → session (test/demo; disable with `DOA_ALLOW_DEV_LOGIN=0`) |
 | GET | `/api/me` | current user + balance |
 | POST | `/api/bets` | `{ marketId, side, amount, paper }` → bet + new balance + updated market |
+| POST | `/api/bets/:id/close` | sell an open position at the current price (2% fee on proceeds) |
 | GET | `/api/portfolio` | `{ open[], resolved[] }` (auth required) |
+| GET | `/api/orders` | your limit orders, resting first (auth required) |
+| POST | `/api/orders` | `{ marketId, side, limitPrice, stake }` — escrows stake, fills when marketable |
+| DELETE | `/api/orders/:id` | cancel a resting order, refund escrow |
+| GET | `/api/resolutions` | public resolution history: outcome, reason, source, payout totals |
 | GET | `/api/leaderboard` | `{ leaderboard }` — ranked by realized P&L |
 | GET | `/api/activity` | `{ events }` — recent real bets |
 | GET/POST | `/api/markets/:id/comments` | read / post (post requires auth) |
 | GET/POST | `/api/challenges` | list open / create (escrows stake) |
 | POST | `/api/challenges/:id/accept` | accept a P2P challenge |
-| POST | `/api/admin/resolve` | `{ marketId, outcome }` + `x-admin-secret` header |
+| POST | `/api/admin/resolve` | `{ marketId, outcome, reason, sourceUrl }` + `x-admin-secret` header |
+| POST | `/api/admin/markets` | `{ name, category, death, daysLeft }` — create a market live |
 | GET | `/api/admin/stats` | users, open bets, fees collected, markets resolved |
 
 ---
@@ -122,7 +139,7 @@ DOA_ADMIN_SECRET=<sha256-of-your-password>
 
 - **House credits, not real money.** No deposit/withdrawal, no on-chain settlement, no smart contracts yet. The faucet exists so the loop is fully playable today.
 - **Money stored as floats.** Fine for a bootstrap; move to integer cents (or on-chain units) before real money.
-- **Price impact is a transparent nudge, not a true AMM.** No LMSR/CPMM, no order book matching. Good enough to make the line move; revisit when liquidity matters.
+- **Price impact is a transparent nudge, not a true AMM.** No LMSR/CPMM. Limit orders fill against the line (house liquidity), not against each other — there's no user-to-user order book matching yet. Good enough to make the market feel real; revisit when liquidity matters.
 - **Comments/leaderboard/activity** show rich seeded demo content alongside real data so the app never looks empty pre-launch. Real user actions persist and rank correctly.
 - Multi-sig resolution, KYC, referrals, and email/SMS notifications remain parked (see `HANDOFF.md`).
 

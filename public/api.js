@@ -31,7 +31,15 @@
     market: (id) => get("/api/markets/" + id),
     // betting
     placeBet: (marketId, side, amount, paper) => post("/api/bets", { marketId, side, amount, paper: !!paper }),
+    closeBet: (betId) => post("/api/bets/" + betId + "/close"),
     portfolio: () => get("/api/portfolio"),
+    // limit orders
+    myOrders: () => get("/api/orders"),
+    placeOrder: (marketId, side, limitPrice, stake) => post("/api/orders", { marketId, side, limitPrice, stake }),
+    cancelOrder: (id) =>
+      fetch(base + "/api/orders/" + id, { method: "DELETE", credentials: "include" }).then(j),
+    // resolution history (public)
+    resolutions: () => get("/api/resolutions"),
     // social / feeds
     leaderboard: () => get("/api/leaderboard"),
     activity: () => get("/api/activity"),
@@ -41,8 +49,10 @@
     createChallenge: (marketId, side, stake) => post("/api/challenges", { marketId, side, stake }),
     acceptChallenge: (id) => post("/api/challenges/" + id + "/accept"),
     // admin
-    adminResolve: (marketId, outcome, adminSecret) =>
-      post("/api/admin/resolve", { marketId, outcome }, { "x-admin-secret": adminSecret }),
+    adminResolve: (marketId, outcome, adminSecret, reason, sourceUrl) =>
+      post("/api/admin/resolve", { marketId, outcome, reason, sourceUrl }, { "x-admin-secret": adminSecret }),
+    adminCreateMarket: (payload, adminSecret) =>
+      post("/api/admin/markets", payload, { "x-admin-secret": adminSecret }),
     adminStats: (adminSecret) =>
       fetch("/api/admin/stats", { credentials: "include", headers: { "x-admin-secret": adminSecret } }).then(j),
     adminLogin: (adminSecret) => post("/api/admin/login", { adminSecret }),

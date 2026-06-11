@@ -576,14 +576,39 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
   const social = React.useContext(SocialContext);
   const paper = social?.paperMode;
   const m = market;
-  const price = side === "DEAD" ? m.death : m.survives;
+  const marketPrice = side === "DEAD" ? m.death : m.survives;
   const [amt, setAmt] = useState(100);
+  const [orderType, setOrderType] = useState("market");          // 'market' | 'limit'
+  const [limitPct, setLimitPct] = useState(() => Math.round(marketPrice * 100));
+  const [placingLimit, setPlacingLimit] = useState(false);
+  const isLimit = orderType === "limit" && !paper;
+  const price = isLimit ? Math.min(0.98, Math.max(0.02, (+limitPct || 0) / 100)) : marketPrice;
   const shares = amt / Math.max(0.01, price);
   const grossPayout = shares; // pays $1 per share if right
   const platformFee = grossPayout * FEE_RATE;
   const netPayout = grossPayout - platformFee;
   const profit = netPayout - amt;
   const sideColor = side === "DEAD" ? "var(--dead)" : "var(--alive)";
+  const limitIsMarketable = isLimit && marketPrice <= price;
+
+  const placeLimitOrder = async () => {
+    if (!walletConnected) { onConnect(); return; }
+    if (!amt || amt <= 0) { social.showToast({ type: "error", message: "Enter an amount first." }); return; }
+    setPlacingLimit(true);
+    try {
+      const r = await window.API.placeOrder(m.id, side, price, amt);
+      social.syncMarket && social.syncMarket(r.market);
+      social.refreshMe && social.refreshMe();
+      social.showToast({
+        type: r.order.status === "filled" ? "connected" : "info",
+        message: r.order.status === "filled"
+          ? `Limit order filled instantly — ${side} ${m.name} at market.`
+          : `Limit order resting: ${side} ${m.name} at ${(price * 100).toFixed(0)}¢. $${amt} escrowed — manage it in Portfolio.`,
+      });
+    } catch (e) {
+      social.showToast({ type: "error", message: e.message || "Order failed." });
+    } finally { setPlacingLimit(false); }
+  };
 
   return (
     <div className="card" style={{ padding: 18, ...(paper ? { borderColor: "rgba(245,158,11,0.4)" } : {}) }}>
@@ -616,6 +641,38 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
         </button>
       </div>
 
+      {/* Order type: market (fill now) vs limit (rest until price hits) */}
+      {!paper && (
+        <div style={{ display: "flex", gap: 4, padding: 3, background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 9, marginBottom: 12 }}>
+          {[["market", "Market"], ["limit", "Limit"]].map(([k, l]) => (
+            <button key={k} onClick={() => setOrderType(k)} style={{ flex: 1, padding: "7px 0", borderRadius: 6, fontSize: 12, fontWeight: 600, color: orderType === k ? "var(--text)" : "var(--text-muted)", background: orderType === k ? "var(--surface)" : "transparent", border: orderType === k ? "1px solid var(--border-strong)" : "1px solid transparent" }}>{l}</button>
+          ))}
+        </div>
+      )}
+
+      {isLimit && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Limit price (max {side} price you'll pay)
+          </div>
+          <div style={{ position: "relative" }}>
+            <input
+              type="number" min="2" max="98" step="1"
+              className="input font-mono"
+              value={limitPct}
+              onChange={(e) => setLimitPct(e.target.value)}
+              style={{ paddingRight: 30, fontSize: 16, fontWeight: 600 }}
+            />
+            <span style={{ position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>¢</span>
+          </div>
+          <div style={{ fontSize: 11, color: limitIsMarketable ? "var(--warn)" : "var(--text-muted)", marginTop: 6 }}>
+            {limitIsMarketable
+              ? `Market is at ${(marketPrice * 100).toFixed(1)}¢ — this fills immediately.`
+              : `Fills if ${side} drops to ${(price * 100).toFixed(0)}¢ (now ${(marketPrice * 100).toFixed(1)}¢). Stake is escrowed until filled or cancelled.`}
+          </div>
+        </div>
+      )}
+
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Amount (USD)</div>
         <div style={{ position: "relative" }}>
@@ -638,7 +695,7 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
       {/* Calculator — FEATURE 1: 2% commission on winnings */}
       <div style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 10, padding: 12, marginBottom: 12 }}>
         {[
-          ["Price", `${(price * 100).toFixed(1)}¢`, "var(--text)"],
+          [isLimit ? "Limit price" : "Price", `${(price * 100).toFixed(1)}¢`, "var(--text)"],
           ["Shares", shares.toFixed(2), "var(--text)"],
           ["Gross payout", "$" + grossPayout.toFixed(2), "var(--text)"],
           ["Platform fee (2%)", "-$" + platformFee.toFixed(2), "var(--dead)", 0.7],
@@ -668,9 +725,15 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
           📄 Place Paper Bet · ${amt}
         </button>
       ) : walletConnected ? (
-        <button className="btn primary" style={{ width: "100%", padding: "14px", fontSize: 14, background: sideColor, borderColor: sideColor }} onClick={() => onConfirm(side, amt)}>
-          Buy {side} · ${amt}
-        </button>
+        isLimit ? (
+          <button className="btn primary" disabled={placingLimit} style={{ width: "100%", padding: "14px", fontSize: 14, opacity: placingLimit ? 0.6 : 1 }} onClick={placeLimitOrder}>
+            {placingLimit ? "Placing…" : `Place Limit Order · ${side} @ ${(price * 100).toFixed(0)}¢ · $${amt}`}
+          </button>
+        ) : (
+          <button className="btn primary" style={{ width: "100%", padding: "14px", fontSize: 14, background: sideColor, borderColor: sideColor }} onClick={() => onConfirm(side, amt)}>
+            Buy {side} · ${amt}
+          </button>
+        )
       ) : (
         <button className="btn primary" style={{ width: "100%", padding: "14px", fontSize: 14 }} onClick={onConnect}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
@@ -931,8 +994,25 @@ function MarketDetailPage({ marketId, navigate, onConfirmBet, walletConnected, o
           <span style={{ color: "var(--text)" }}>{m.name}</span>
         </div>
 
+        {/* Resolved banner — outcome + public reason + source */}
+        {m.status === "resolved" && (
+          <div style={{ padding: "14px 18px", marginBottom: 16, borderRadius: 12, background: m.outcome === "DEAD" ? "rgba(239,68,68,0.08)" : "rgba(16,185,129,0.08)", border: `1px solid ${m.outcome === "DEAD" ? "rgba(239,68,68,0.4)" : "rgba(16,185,129,0.4)"}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, fontWeight: 700, color: m.outcome === "DEAD" ? "var(--dead)" : "var(--alive)" }}>
+              <span>{m.outcome === "DEAD" ? "💀" : "💚"}</span>
+              <span>RESOLVED {m.outcome} — betting is closed. Winning shares settled at $1.00 (2% fee on winnings).</span>
+            </div>
+            {m.resolutionReason && <div style={{ fontSize: 13, color: "var(--text)", marginTop: 8, lineHeight: 1.6 }}>{m.resolutionReason}</div>}
+            {m.resolutionSource && (
+              <a href={m.resolutionSource} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--indigo)", marginTop: 6 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M10 14L21 3M21 3h-6M21 3v6M21 14v5a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                View source
+              </a>
+            )}
+          </div>
+        )}
+
         {/* FEATURE 3 — urgency banner */}
-        {m.daysLeft <= 30 && (
+        {m.status !== "resolved" && m.daysLeft <= 30 && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px", marginBottom: 16, borderRadius: 10, background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.4)", color: "var(--dead)", fontSize: 13, fontWeight: 600 }}>
             <span className="pulse-urgent" style={{ fontSize: 14 }}>🔴</span>
             <span>This market closes in {m.daysLeft} days. Final bets are open.</span>
@@ -1141,7 +1221,7 @@ function BetBottomSheet({ onClose, children }) {
 // Pull the signed-in user's real positions and shape them like the seeded demo
 // data so the rest of PortfolioPage works unchanged. Returns null when logged out
 // (page then falls back to the seeded demo portfolio).
-function useLivePortfolio(authed) {
+function useLivePortfolio(authed, tick) {
   const [data, setData] = React.useState(null);
   React.useEffect(() => {
     let alive = true;
@@ -1154,9 +1234,9 @@ function useLivePortfolio(authed) {
         if (!alive) return;
         const positions = pf.open.map((p) => {
           const market = findM(p.marketId);
-          return { market, side: p.side, shares: p.shares, avgPrice: p.price,
+          return { betId: p.id, market, side: p.side, shares: p.shares, avgPrice: p.price,
             currentPrice: p.currentPrice, cost: p.stake, value: p.value, pnl: p.pnl,
-            pct: p.pnl / Math.max(1, p.stake) };
+            pct: p.pnl / Math.max(1, p.stake), paper: p.paper };
         });
         const resolved = pf.resolved.map((r) => {
           const market = findM(r.marketId);
@@ -1169,13 +1249,89 @@ function useLivePortfolio(authed) {
       })
       .catch(() => setData({ positions: [], resolved: [] }));
     return () => { alive = false; };
-  }, [authed]);
+  }, [authed, tick]);
   return data;
+}
+
+// Signed-in user's resting + recent limit orders, with cancel.
+function OpenOrdersCard({ tick, onChanged }) {
+  const social = React.useContext(SocialContext);
+  const [orders, setOrders] = React.useState(null);
+  React.useEffect(() => {
+    let alive = true;
+    window.API.myOrders().then((r) => { if (alive) setOrders(r.orders); }).catch(() => setOrders([]));
+    return () => { alive = false; };
+  }, [tick]);
+  if (!orders || orders.length === 0) return null;
+  const cancel = async (o) => {
+    try {
+      await window.API.cancelOrder(o.id);
+      social.showToast({ type: "info", message: `Order cancelled — $${o.stake} refunded.` });
+      social.refreshMe && social.refreshMe();
+      onChanged && onChanged();
+    } catch (e) { social.showToast({ type: "error", message: e.message }); }
+  };
+  const statusStyle = (s) =>
+    s === "open" ? { background: "rgba(91,107,245,0.12)", color: "var(--indigo)" }
+    : s === "filled" ? { background: "rgba(16,185,129,0.12)", color: "var(--alive)" }
+    : { background: "rgba(107,114,128,0.15)", color: "var(--text-muted)" };
+  return (
+    <div className="card" style={{ overflow: "hidden", marginBottom: 18 }}>
+      <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>Limit orders</span>
+        <span className="font-mono" style={{ fontSize: 12, color: "var(--text-muted)" }}>{orders.filter(o => o.status === "open").length} resting</span>
+      </div>
+      <table className="data">
+        <thead>
+          <tr>
+            <th>Market</th><th>Side</th>
+            <th style={{ textAlign: "right" }}>Limit</th>
+            <th style={{ textAlign: "right" }}>Stake</th>
+            <th>Status</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {orders.map((o) => (
+            <tr key={o.id} className="row">
+              <td style={{ fontWeight: 500 }}>{o.market}</td>
+              <td><span style={{ color: o.side === "DEAD" ? "var(--dead)" : "var(--alive)", fontWeight: 600, fontSize: 12 }}>{o.side}</span></td>
+              <td className="font-mono" style={{ textAlign: "right" }}>{(o.limitPrice * 100).toFixed(1)}¢</td>
+              <td className="font-mono" style={{ textAlign: "right" }}>{fmtMoney(o.stake)}</td>
+              <td><span style={{ display: "inline-flex", fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6, textTransform: "uppercase", ...statusStyle(o.status) }}>{o.status}</span></td>
+              <td style={{ textAlign: "right" }}>
+                {o.status === "open" && (
+                  <button className="btn btn-sm" onClick={() => cancel(o)}>Cancel</button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function PortfolioPage({ navigate, walletConnected }) {
   const social = React.useContext(SocialContext);
-  const live = useLivePortfolio(walletConnected);
+  const [pfTick, setPfTick] = React.useState(0);
+  const [closing, setClosing] = React.useState(null); // betId in flight
+  const live = useLivePortfolio(walletConnected, pfTick);
+
+  const handleClose = async (p, e) => {
+    e.stopPropagation();
+    if (!walletConnected || !p.betId) { social.showToast({ type: "wallet" }); return; }
+    if (closing) return;
+    setClosing(p.betId);
+    try {
+      const r = await window.API.closeBet(p.betId);
+      social.syncMarket && social.syncMarket(r.market);
+      social.refreshMe && social.refreshMe();
+      setPfTick((t) => t + 1);
+      social.showToast({ type: "connected", message: `Closed ${r.closed.market} ${r.closed.side} — $${r.closed.netProceeds.toFixed(2)} back to balance (fee $${r.closed.fee.toFixed(2)}).` });
+    } catch (err) {
+      social.showToast({ type: "error", message: err.message || "Close failed." });
+    } finally { setClosing(null); }
+  };
   const POSITIONS = live ? live.positions : (window.POSITIONS || []);
   const RESOLVED = live ? live.resolved : (window.RESOLVED || []);
   const totalValue = POSITIONS.reduce((s, p) => s + p.value, 0);
@@ -1305,12 +1461,23 @@ function PortfolioPage({ navigate, walletConnected }) {
                   {(p.pnl >= 0 ? "+" : "") + fmtMoney(p.pnl)}
                   <div style={{ fontSize: 10, opacity: 0.7 }}>{(p.pct * 100).toFixed(1)}%</div>
                 </td>
-                <td><button className="btn btn-sm">Close</button></td>
+                <td>
+                  <button
+                    className="btn btn-sm"
+                    disabled={closing === p.betId}
+                    onClick={(e) => handleClose(p, e)}
+                    title={p.betId ? `Sell ${p.shares} shares at ${(p.currentPrice * 100).toFixed(1)}¢ (2% fee on proceeds)` : "Demo position"}
+                    style={closing === p.betId ? { opacity: 0.5 } : {}}
+                  >{closing === p.betId ? "Closing…" : "Close"}</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* Limit orders (live accounts only) */}
+      {walletConnected && <OpenOrdersCard tick={pfTick} onChanged={() => setPfTick((t) => t + 1)}/>}
 
       {/* FEATURE 1 — Recovery picks (shown when holding a losing position) */}
       {POSITIONS.some(p => p.pnl < 0) && (() => {
@@ -1375,8 +1542,8 @@ function PortfolioPage({ navigate, walletConnected }) {
                   <span style={{
                     display: "inline-flex", alignItems: "center", whiteSpace: "nowrap", flexShrink: 0,
                     fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 6,
-                    background: r.outcome === "WON" ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
-                    color: r.outcome === "WON" ? "var(--alive)" : "var(--dead)",
+                    background: r.outcome === "WON" ? "rgba(16,185,129,0.12)" : r.outcome === "CLOSED" ? "rgba(91,107,245,0.12)" : "rgba(239,68,68,0.12)",
+                    color: r.outcome === "WON" ? "var(--alive)" : r.outcome === "CLOSED" ? "var(--indigo)" : "var(--dead)",
                   }}>{r.outcome}</span>
                 </td>
                 <td className="font-mono" style={{ textAlign: "right" }}>{r.shares}</td>
@@ -1927,15 +2094,48 @@ function ResolutionConsolePage() {
   const [secretInput, setSecretInput] = useState("");
   const [stats, setStats] = useState(null);
   const [vote, setVote] = useState(null);     // { market, side }
+  const [reason, setReason] = useState("");
+  const [sourceUrl, setSourceUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // last settlement summary
   const [tick, setTick] = useState(0);
+  // create-market form
+  const [createOpen, setCreateOpen] = useState(false);
+  const [cName, setCName] = useState("");
+  const [cCategory, setCCategory] = useState(CATEGORY_LIST[1]);
+  const [cDeath, setCDeath] = useState(70);
+  const [cDays, setCDays] = useState(365);
+  const [creating, setCreating] = useState(false);
 
-  // open markets only — the real resolution queue
-  const queue = useMemo(
-    () => (window.MARKETS || []).filter((m) => m.status !== "resolved").slice(0, 30),
-    [tick, social]
-  );
+  const openVote = (m, s) => { setReason(""); setSourceUrl(""); setVote({ market: m, side: s }); };
+
+  const submitCreate = async () => {
+    if (creating) return;
+    setCreating(true);
+    try {
+      const r = await window.API.adminCreateMarket(
+        { name: cName, category: cCategory, death: (+cDeath || 0) / 100, daysLeft: +cDays || 0 },
+        secret
+      );
+      social.syncMarket && social.syncMarket(r.market);
+      social.showToast({ type: "connected", message: `Market live: "${r.market.name}" at ${Math.round(r.market.death * 100)}% DEAD.` });
+      setCName(""); setCreateOpen(false); setTick((t) => t + 1);
+      window.API.adminStats(secret).then(setStats).catch(() => {});
+    } catch (e) {
+      social.showToast({ type: "error", message: e.message || "Create failed." });
+    } finally { setCreating(false); }
+  };
+
+  // open markets only — newest first so just-created markets surface on top
+  const [qFilter, setQFilter] = useState("");
+  const queue = useMemo(() => {
+    const f = qFilter.trim().toLowerCase();
+    return (window.MARKETS || [])
+      .filter((m) => m.status !== "resolved")
+      .filter((m) => !f || m.name.toLowerCase().includes(f) || m.category.toLowerCase().includes(f))
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 30);
+  }, [tick, social, qFilter]);
 
   const tryAuth = async (sec) => {
     try {
@@ -1956,10 +2156,10 @@ function ResolutionConsolePage() {
     if (!vote) return;
     setBusy(true);
     try {
-      const r = await window.API.adminResolve(vote.market.id, vote.side, secret);
+      const r = await window.API.adminResolve(vote.market.id, vote.side, secret, reason, sourceUrl);
       const s = r.resolved;
       setResult(s);
-      social.syncMarket && social.syncMarket({ ...vote.market, status: "resolved", outcome: vote.side, death: vote.side === "DEAD" ? 1 : 0, survives: vote.side === "DEAD" ? 0 : 1 });
+      social.syncMarket && social.syncMarket({ ...vote.market, status: "resolved", outcome: vote.side, death: vote.side === "DEAD" ? 1 : 0, survives: vote.side === "DEAD" ? 0 : 1, resolutionReason: reason || null, resolutionSource: sourceUrl || null, resolvedAt: Date.now() });
       social.refreshMe && social.refreshMe();
       window.API.adminStats(secret).then(setStats).catch(() => {});
       social.showToast({ type: "connected", message: `${s.market} resolved ${s.outcome} — ${s.winners} winners paid $${s.totalNetPaid.toFixed(2)} (fees $${s.totalFeesCollected.toFixed(2)}).` });
@@ -2015,10 +2215,54 @@ function ResolutionConsolePage() {
         </div>
       )}
 
+      {/* Create a new market — live immediately, no redeploy */}
+      <div className="card" style={{ marginBottom: 18, overflow: "hidden" }}>
+        <button onClick={() => setCreateOpen(o => !o)} style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", textAlign: "left" }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>＋ Create market</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{createOpen ? "▲" : "▼"}</span>
+        </button>
+        {createOpen && (
+          <div style={{ padding: "0 18px 18px", borderTop: "1px solid var(--border)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr", gap: 12, marginTop: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Company name</div>
+                <input className="input" placeholder="e.g. Stack Overflow" value={cName} onChange={(e) => setCName(e.target.value)}/>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Category</div>
+                <select className="input" value={cCategory} onChange={(e) => setCCategory(e.target.value)}>
+                  {CATEGORY_LIST.filter(c => c !== "All").map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Starting DEAD odds (%)</div>
+                <input type="number" min="2" max="98" className="input font-mono" value={cDeath} onChange={(e) => setCDeath(e.target.value)}/>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Resolves in (days)</div>
+                <input type="number" min="1" max="2000" className="input font-mono" value={cDays} onChange={(e) => setCDays(e.target.value)}/>
+              </div>
+            </div>
+            <button className="btn primary" disabled={creating || !cName.trim()} onClick={submitCreate} style={{ width: "100%", marginTop: 14, padding: 12, opacity: creating || !cName.trim() ? 0.6 : 1 }}>
+              {creating ? "Creating…" : "Launch market"}
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="card" style={{ overflow: "hidden" }}>
-        <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>Open markets</span>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{queue.length} open</span>
+        <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}>Open markets</span>
+          <input
+            className="input"
+            placeholder="Filter by name or category…"
+            value={qFilter}
+            onChange={(e) => setQFilter(e.target.value)}
+            style={{ maxWidth: 280, padding: "7px 10px", fontSize: 12 }}
+          />
+          <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{queue.length} shown · newest first</span>
         </div>
         {queue.map((m) => (
           <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderBottom: "1px solid rgba(31,41,55,0.5)", flexWrap: "wrap", gap: 12 }}>
@@ -2030,8 +2274,8 @@ function ResolutionConsolePage() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button className="btn btn-sm dead" onClick={() => setVote({ market: m, side: "DEAD" })}>Resolve DEAD</button>
-              <button className="btn btn-sm alive" onClick={() => setVote({ market: m, side: "ALIVE" })}>Resolve ALIVE</button>
+              <button className="btn btn-sm dead" onClick={() => openVote(m, "DEAD")}>Resolve DEAD</button>
+              <button className="btn btn-sm alive" onClick={() => openVote(m, "ALIVE")}>Resolve ALIVE</button>
             </div>
           </div>
         ))}
@@ -2049,14 +2293,105 @@ function ResolutionConsolePage() {
               Resolve <strong>{vote.market.name}</strong> as <span style={{ color: vote.side === "DEAD" ? "var(--dead)" : "var(--alive)", fontWeight: 700 }}>{vote.side}</span>?
             </p>
             <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 16px", lineHeight: 1.5 }}>
-              Winning shares settle at $1.00. A 2% fee is taken on gross winnings. This is irreversible.
+              Winning shares settle at $1.00. A 2% fee is taken on gross winnings. Unfilled limit orders are refunded. This is irreversible.
             </p>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Resolution reason (public)</div>
+            <textarea
+              className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+              placeholder={vote.side === "DEAD" ? "e.g. Filed Chapter 11 bankruptcy on June 3, 2026." : "e.g. Resolution window ended with revenue above the collapse threshold."}
+              style={{ resize: "vertical", marginBottom: 10, fontFamily: "inherit" }}
+            />
+            <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Source URL (public)</div>
+            <input className="input font-mono" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} placeholder="https://…" style={{ marginBottom: 14, fontSize: 12 }}/>
             <button className="btn primary" disabled={busy} style={{ width: "100%", padding: 13, opacity: busy ? 0.6 : 1, background: vote.side === "DEAD" ? "var(--dead)" : "var(--alive)", borderColor: vote.side === "DEAD" ? "var(--dead)" : "var(--alive)" }} onClick={confirmResolve}>
               {busy ? "Resolving…" : `Confirm — Resolve ${vote.side}`}
             </button>
+            <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "10px 0 0", textAlign: "center" }}>
+              Reason and source are published on the public Resolution History page.
+            </p>
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---- Public Resolution History — the trust layer ----
+// Every resolved market: outcome, when, why, source, and what was paid out.
+function ResolutionHistoryPage() {
+  const social = React.useContext(SocialContext);
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    window.API.resolutions().then((r) => { if (alive) setRows(r.resolutions); }).catch(() => setRows([]));
+    return () => { alive = false; };
+  }, []);
+
+  return (
+    <div style={{ padding: "32px", maxWidth: 860, margin: "0 auto" }}>
+      <button onClick={() => social.navigate({ name: "markets" })} style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>← Back</button>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: 22 }}>📜</span>
+        <h1 className="font-display" style={{ margin: 0, fontSize: 26, fontWeight: 700, letterSpacing: "-0.02em" }}>Resolution History</h1>
+      </div>
+      <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 24px", maxWidth: 620, lineHeight: 1.6 }}>
+        Every market we've ever settled, with the reason and the source. Winning shares pay $1.00 minus the 2% platform fee. If you think a resolution is wrong, this is the record to argue with.
+      </p>
+
+      {rows === null && <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Loading…</div>}
+      {rows && rows.length === 0 && (
+        <div className="card" style={{ padding: 28, textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+          No markets resolved yet. When one settles, the full record appears here.
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {(rows || []).map((r) => (
+          <div key={r.id} className="card" style={{ padding: 18 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <Logo name={r.name} size={36} hue={r.logo.hue} initials={r.logo.initials}/>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>
+                    <button onClick={() => social.navigate({ name: "market", id: r.id })} style={{ fontWeight: 600, fontSize: 15 }}>{r.name}</button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {r.category} · resolved {r.resolvedAt ? new Date(r.resolvedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—"}
+                  </div>
+                </div>
+              </div>
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700,
+                padding: "5px 12px", borderRadius: 8, letterSpacing: "0.04em",
+                background: r.outcome === "DEAD" ? "rgba(239,68,68,0.12)" : "rgba(16,185,129,0.12)",
+                color: r.outcome === "DEAD" ? "var(--dead)" : "var(--alive)",
+              }}>{r.outcome === "DEAD" ? "💀 DEAD" : "💚 ALIVE"}</span>
+            </div>
+
+            {(r.reason || r.sourceUrl) && (
+              <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 10 }}>
+                {r.reason && <div style={{ fontSize: 13, lineHeight: 1.6 }}>{r.reason}</div>}
+                {r.sourceUrl && (
+                  <a href={r.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--indigo)", marginTop: r.reason ? 8 : 0 }}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M10 14L21 3M21 3h-6M21 3v6M21 14v5a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    Source
+                  </a>
+                )}
+              </div>
+            )}
+            {!r.reason && !r.sourceUrl && (
+              <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-dim)" }}>No public reason recorded for this resolution.</div>
+            )}
+
+            <div style={{ display: "flex", gap: 22, marginTop: 12, fontSize: 12, color: "var(--text-muted)", flexWrap: "wrap" }}>
+              <span>Winners: <span className="font-mono" style={{ color: "var(--text)" }}>{r.winners}</span></span>
+              <span>Losers: <span className="font-mono" style={{ color: "var(--text)" }}>{r.losers}</span></span>
+              <span>Paid out: <span className="font-mono" style={{ color: "var(--alive)" }}>${(r.totalPaid || 0).toLocaleString()}</span></span>
+              <span>Fees: <span className="font-mono" style={{ color: "var(--text)" }}>${(r.totalFees || 0).toLocaleString()}</span></span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

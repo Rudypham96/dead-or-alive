@@ -109,8 +109,16 @@ function App() {
     const target = MARKETS.find(x => x.id === m.id);
     if (target) {
       target.death = m.death; target.survives = m.survives;
-      target.series = m.series; target.change24h = m.change24h;
-      target.volume = m.volume; target.status = m.status; target.outcome = m.outcome;
+      if (m.series) target.series = m.series;
+      if (m.change24h != null) target.change24h = m.change24h;
+      if (m.volume != null) target.volume = m.volume;
+      target.status = m.status; target.outcome = m.outcome;
+      if ("resolutionReason" in m) target.resolutionReason = m.resolutionReason;
+      if ("resolutionSource" in m) target.resolutionSource = m.resolutionSource;
+      if ("resolvedAt" in m) target.resolvedAt = m.resolvedAt;
+    } else if (m.name && m.logo) {
+      // brand new market created from the admin console — goes live client-side too
+      MARKETS.push({ ...m });
     }
     setMarketTick(t => t + 1);
   }, []);
@@ -312,8 +320,15 @@ function App() {
     setMeta('meta[name="twitter:description"]', "content", desc);
   }, []);
 
-  // pushState + meta on route change
+  // pushState + meta on route change. Skip the very first run — it fires with
+  // the default route before the ?m= deep link is read, and would wipe it.
+  const routeEffectRan = useRef(false);
   useEffect(() => {
+    if (!routeEffectRan.current) {
+      routeEffectRan.current = true;
+      updatePageMeta(route);
+      return;
+    }
     if (route.name === "market") {
       window.history.pushState({ marketId: route.id }, "", "?m=" + route.id);
     } else if (route.name === "markets") {
@@ -350,9 +365,20 @@ function App() {
           if (m) {
             t.death = m.death; t.survives = m.survives; t.series = m.series;
             t.change24h = m.change24h; t.volume = m.volume; t.status = m.status; t.outcome = m.outcome;
+            t.resolutionReason = m.resolutionReason; t.resolutionSource = m.resolutionSource; t.resolvedAt = m.resolvedAt;
+            byId.delete(t.id);
           }
         });
+        // markets created server-side that the seeded client list doesn't know about
+        byId.forEach((m) => MARKETS.push({ ...m }));
         setMarketTick((x) => x + 1);
+        // re-check the ?m= deep link — it may point at a market that only just arrived
+        const params = new URLSearchParams(window.location.search);
+        const mid = params.get("m");
+        if (mid != null) {
+          const found = MARKETS.find((x) => x.id === +mid);
+          if (found) setRoute((r) => (r.name === "markets" ? { name: "market", id: found.id } : r));
+        }
       }
       if (boot.me) {
         setWalletConnected(true);
@@ -375,6 +401,7 @@ function App() {
   else if (route.name === "tournaments") page = <TournamentsPage/>;
   else if (route.name === "profile") page = <ProfilePage username={route.username}/>;
   else if (route.name === "admin") page = <ResolutionConsolePage/>;
+  else if (route.name === "resolutions") page = <ResolutionHistoryPage/>;
   else if (route.name === "risk-disclosure") page = <RiskDisclosurePage/>;
   else if (route.name === "death-watch") page = <DeathWatchPage/>;
   else if (route.name === "alerts") page = <AlertsPage/>;
@@ -432,6 +459,7 @@ function App() {
           </div>
           <div style={{ display: "flex", gap: 18, fontFamily: "'JetBrains Mono', monospace", alignItems: "center" }}>
             {footerLink("Resolution Authority", "admin")}
+            {footerLink("Resolution History", "resolutions")}
             {footerLink("Risk Disclosure", "risk-disclosure")}
             {footerLink("Terms")}
             {footerLink("API")}

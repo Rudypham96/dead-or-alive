@@ -164,6 +164,93 @@ try {
   r = await api("GET", "/api/markets/5/comments");
   check("comment persisted + readable", r.data.comments.some((c) => c.text === "AI ate this one."));
 
+  // ===================== SELL / EXIT POSITIONS =====================
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "exiter" });
+  r = await api("POST", "/api/bets", { marketId: 1, side: "DEAD", amount: 100 });
+  const exBet = r.data.bet;
+  r = await api("POST", "/api/bets/" + exBet.id + "/close", {});
+  check("close position succeeds", r.status === 200, JSON.stringify(r.data));
+  const cl = r.data.closed;
+  check("close fee is 2% of proceeds", approx(cl.fee, cl.grossProceeds * 0.02, 0.02), `${cl.fee} vs ${cl.grossProceeds * 0.02}`);
+  check("close net = gross - fee", approx(cl.netProceeds, cl.grossProceeds - cl.fee, 0.02));
+  r = await api("GET", "/api/me");
+  check("balance credited net proceeds", approx(r.data.user.balance, 900 + cl.netProceeds, 0.05), `${r.data.user.balance} vs ${900 + cl.netProceeds}`);
+  r = await api("GET", "/api/portfolio");
+  check("portfolio shows CLOSED position", r.data.resolved.some((x) => x.outcome === "CLOSED"));
+  r = await api("POST", "/api/bets/" + exBet.id + "/close", {});
+  check("double close rejected", r.status === 400);
+
+  // ===================== ADMIN MARKET CREATION =====================
+  r = await api("POST", "/api/admin/markets", { name: "TestCo", category: "Education", death: 0.5, daysLeft: 100 });
+  check("create market without admin secret rejected", r.status === 401);
+  r = await api("POST", "/api/admin/markets", { name: "TestCo", category: "Education", death: 0.5, daysLeft: 100 }, { "x-admin-secret": ADMIN });
+  check("admin creates market", r.status === 200 && r.data.market.name === "TestCo", JSON.stringify(r.data));
+  const newId = r.data.market.id;
+  check("new market has a 60-point series", r.data.market.series.length === 60);
+  r = await api("GET", "/api/markets");
+  check("market count is now 121", r.data.count === 121, "got " + r.data.count);
+  r = await api("POST", "/api/admin/markets", { name: "TestCo", category: "Education", death: 0.5, daysLeft: 100 }, { "x-admin-secret": ADMIN });
+  check("duplicate open market rejected", r.status === 400);
+  r = await api("POST", "/api/bets", { marketId: newId, side: "DEAD", amount: 50 });
+  check("can bet on the new market", r.status === 200);
+
+  // ===================== RESOLUTION HISTORY + SOURCES =====================
+  r = await api("POST", "/api/admin/resolve",
+    { marketId: newId, outcome: "DEAD", reason: "TestCo filed for bankruptcy.", sourceUrl: "https://example.com/testco" },
+    { "x-admin-secret": ADMIN });
+  check("resolve with reason + source succeeds", r.status === 200);
+  r = await api("GET", "/api/resolutions");
+  const hist = r.data.resolutions.find((x) => x.id === newId);
+  check("history records reason + source", !!hist && hist.reason === "TestCo filed for bankruptcy." && hist.sourceUrl === "https://example.com/testco");
+  check("history records payout totals", !!hist && hist.winners === 1 && hist.totalPaid > 0, JSON.stringify(hist));
+  r = await api("GET", "/api/markets/" + newId);
+  check("market API exposes resolution reason", r.data.market.resolutionReason === "TestCo filed for bankruptcy.");
+
+  // ===================== LIMIT ORDERS =====================
+  // Market 26 (Corbis) is thin (liquidity floor), so a whale bet moves the line
+  // enough to trigger a resting order.
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "limitguy" });
+  let mkt = (await api("GET", "/api/markets/26")).data.market;
+  const restLimit = Math.round((mkt.death - 0.01) * 1000) / 1000;
+  r = await api("POST", "/api/orders", { marketId: 26, side: "DEAD", limitPrice: restLimit, stake: 60 });
+  check("limit below market rests open", r.data.order && r.data.order.status === "open", JSON.stringify(r.data));
+  check("stake escrowed on placement", approx(r.data.balance, 940, 0.02), "balance " + r.data.balance);
+  const restId = r.data.order.id;
+
+  // whale pushes the line down through the limit
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "whale2" });
+  await api("POST", "/api/bets", { marketId: 26, side: "ALIVE", amount: 800 });
+
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "limitguy" });
+  r = await api("GET", "/api/orders");
+  const rest = r.data.orders.find((o) => o.id === restId);
+  check("resting order filled after price crossed limit", !!rest && rest.status === "filled" && !!rest.betId, JSON.stringify(rest));
+  r = await api("GET", "/api/portfolio");
+  check("filled order created a real position", r.data.open.some((p) => p.marketId === 26 && p.side === "DEAD"));
+
+  // marketable limit fills immediately
+  r = await api("POST", "/api/orders", { marketId: 26, side: "DEAD", limitPrice: 0.95, stake: 20 });
+  check("marketable limit fills immediately", r.data.order && r.data.order.status === "filled");
+
+  // cancel refunds escrow
+  r = await api("POST", "/api/orders", { marketId: 26, side: "DEAD", limitPrice: 0.05, stake: 30 });
+  const cancelId = r.data.order.id;
+  const balBeforeCancel = r.data.balance;
+  r = await api("DELETE", "/api/orders/" + cancelId);
+  check("cancel refunds escrow", r.status === 200 && approx(r.data.balance, balBeforeCancel + 30, 0.02), JSON.stringify(r.data));
+
+  // resolution refunds any open orders
+  r = await api("POST", "/api/orders", { marketId: 26, side: "DEAD", limitPrice: 0.05, stake: 25 });
+  const balBeforeResolve = r.data.balance;
+  r = await api("POST", "/api/admin/resolve", { marketId: 26, outcome: "DEAD" }, { "x-admin-secret": ADMIN });
+  check("resolution refunds open orders", r.status === 200 && r.data.resolved.ordersRefunded >= 1, JSON.stringify(r.data.resolved));
+  r = await api("GET", "/api/me");
+  check("escrow + winnings credited after resolution", r.data.user.balance >= balBeforeResolve + 25, "balance " + r.data.user.balance);
+
   console.log(`\n${fail === 0 ? "ALL PASSED" : "FAILED"} — ${pass} passed, ${fail} failed\n`);
 } catch (e) {
   console.error("\nTest harness error:", e.message);
