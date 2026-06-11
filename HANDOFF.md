@@ -1,5 +1,37 @@
 # Dead or Alive — Session Handoff Document
-*Created: 2026-06-05 | For: New Claude session on Rudy's laptop*
+*Created: 2026-06-05 | Updated: 2026-06-11 with full-stack build*
+
+---
+
+## ⚡ UPDATE 2026-06-11 — IT'S NOW A REAL APP (not just a prototype)
+
+The design prototype has been turned into a **working full-stack application**. The whole money loop runs for real, end to end. This repo now contains both the frontend and a real backend.
+
+**Run it:**
+```bash
+npm install
+npm start          # → http://localhost:3000
+npm test           # 28-check end-to-end suite, all passing
+```
+Requires Node 22.5+ (uses built-in `node:sqlite` — no native build, no API keys, no DB setup).
+
+**What's real now:**
+- **Backend** — Express + SQLite (`server/`). Mirrors Nick's live API contract (`/api/markets`, `/api/auth/nonce`, `/api/leaderboard`, `/api/activity`) and extends it.
+- **Wallet auth done right** — nonce is `await`-ed before `personal_sign`, so the `Cannot read properties of null` bug can't happen. Signature verified server-side with ethers; nonces are single-use. (See README → "Wallet auth".)
+- **Betting** — real share purchase (`shares = stake/price`), balance debited, the line moves with each bet.
+- **Resolution + payout** — admin resolves at `/admin`; winners settle at $1/share minus the **2% fee on winnings**; balances credited.
+- **Portfolio / leaderboard / activity** — fed by real bets (with seeded demo content alongside so it never looks empty).
+- **Challenges + comments** — P2P stake escrow/accept and persisted comments.
+
+**Verified end to end in the browser:** connect → bet $100 on Chegg → balance $1000→$900 → portfolio shows the position → admin resolves Chegg DEAD → payout $111.13 (gross $113.40, fee $2.27) → balance $900→$1011.13. Plus 28 automated assertions via `npm test`.
+
+**New money paths everyone should know:**
+- New accounts get **$1,000 test house credits** (faucet). No real deposits/withdrawals yet — that's still parked.
+- No wallet in the browser → frictionless guest login for testing/demos. Disable with `DOA_ALLOW_DEV_LOGIN=0`.
+
+**Read `README.md` first** — full architecture, API reference, env vars, and known limitations live there.
+
+**Still parked (unchanged):** real-money deposits/withdrawals, smart contracts, on-chain settlement, KYC, referrals, email/SMS, true AMM pricing. See the parked list further down.
 
 ---
 

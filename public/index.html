@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dead or Alive — Will AI kill it?</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #0A0B14;
+    --bg-elev: #0F1120;
+    --surface: #111827;
+    --surface-2: #161E33;
+    --border: #1F2937;
+    --border-strong: #2A3347;
+    --text: #F9FAFB;
+    --text-muted: #6B7280;
+    --text-dim: #4B5563;
+    --indigo: #5B6BF5;
+    --indigo-dim: #3A48B8;
+    --indigo-glow: rgba(91, 107, 245, 0.18);
+    --purple: #8B5CF6;
+    --dead: #EF4444;       /* AI KILLS IT */
+    --dead-dim: #7F1D1D;
+    --alive: #10B981;      /* SURVIVES */
+    --alive-dim: #064E3B;
+    --warn: #F59E0B;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body { min-height: 100vh; }
+  a { color: inherit; text-decoration: none; }
+  button { font-family: inherit; cursor: pointer; border: 0; background: none; color: inherit; }
+  input, select { font-family: inherit; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #1F2937; border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: #2A3347; }
+
+  .font-display { font-family: 'Space Grotesk', sans-serif; letter-spacing: -0.01em; }
+  .font-mono { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'tnum' 1, 'zero' 1; }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; white-space: nowrap; flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .pill.live { color: var(--alive); border-color: rgba(16, 185, 129, 0.25); background: rgba(16,185,129,0.06); }
+  .pill.live .dot { animation: blink 1.4s infinite ease-in-out; }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  .pulse-urgent { animation: pulseUrgent 1.4s ease-in-out infinite; }
+  @keyframes pulseUrgent { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+  .detail-right-sticky {
+    position: sticky;
+    top: 80px;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-width: thin;
+    scrollbar-color: #1F2937 transparent;
+  }
+  .detail-right-sticky::-webkit-scrollbar { width: 6px; }
+  .detail-right-sticky::-webkit-scrollbar-thumb { background: #1F2937; border-radius: 8px; }
+  .detail-right-sticky::-webkit-scrollbar-track { background: transparent; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex-shrink: 0;
+    padding: 6px 10px; border-radius: 8px; font-size: 12px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-muted);
+    transition: all 0.15s ease;
+  }
+  .chip:hover { color: var(--text); border-color: var(--border-strong); }
+  .chip.active { background: rgba(91,107,245,0.10); color: var(--text); border-color: rgba(91,107,245,0.45); }
+
+  .skull-mark {
+    width: 28px; height: 28px; border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, var(--indigo) 0%, var(--purple) 100%);
+    color: #0A0B14; font-weight: 700; font-family: 'Space Grotesk', sans-serif;
+    font-size: 14px;
+  }
+
+  .ticker-wrap { overflow: hidden; mask-image: linear-gradient(90deg, transparent 0, #000 6%, #000 94%, transparent 100%); }
+  .ticker-track { display: inline-flex; gap: 32px; white-space: nowrap; padding: 8px 0; animation: ticker 60s linear infinite; }
+  @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.2s ease;
+  }
+  .card.hover:hover {
+    border-color: rgba(91,107,245,0.35);
+    box-shadow: 0 0 0 1px rgba(91,107,245,0.12), 0 8px 30px -12px var(--indigo-glow);
+    transform: translateY(-1px);
+  }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 10px 14px; border-radius: 10px; font-weight: 600; font-size: 13px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--text);
+    transition: all 0.15s ease;
+  }
+  .btn:hover { border-color: var(--border-strong); background: var(--surface-2); }
+  .btn.primary { background: var(--indigo); border-color: var(--indigo); color: white; }
+  .btn.primary:hover { background: #6E7CFA; border-color: #6E7CFA; }
+  .btn.ghost { background: transparent; }
+  .btn.dead { background: linear-gradient(180deg, #DC2626 0%, #B91C1C 100%); border-color: #B91C1C; color: white; }
+  .btn.alive { background: linear-gradient(180deg, #059669 0%, #047857 100%); border-color: #047857; color: white; }
+  .btn:active { transform: translateY(1px); }
+  .btn-sm { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+
+  .input {
+    background: var(--bg-elev); border: 1px solid var(--border);
+    color: var(--text); padding: 10px 12px; border-radius: 10px;
+    font-size: 13px; outline: none; width: 100%;
+    transition: border-color 0.15s ease;
+  }
+  .input:focus { border-color: rgba(91,107,245,0.5); }
+
+  .bar {
+    height: 6px; border-radius: 999px; background: var(--bg-elev); overflow: hidden;
+    display: flex;
+  }
+  .bar > .dead-fill { background: linear-gradient(90deg, #B91C1C, #EF4444); }
+  .bar > .alive-fill { background: linear-gradient(90deg, #059669, #10B981); }
+
+  table.data { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.data th {
+    text-align: left; padding: 10px 14px; color: var(--text-muted);
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border); background: var(--bg-elev);
+  }
+  table.data td {
+    padding: 14px; border-bottom: 1px solid var(--border); vertical-align: middle;
+  }
+  table.data tr:last-child td { border-bottom: 0; }
+  table.data tr.row:hover td { background: rgba(91,107,245,0.04); }
+
+  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  .topnav { position: sticky; top: 0; z-index: 30; background: rgba(10,11,20,0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+  .sidebar { border-right: 1px solid var(--border); padding: 20px 14px; position: sticky; top: 64px; height: calc(100vh - 64px); overflow-y: auto; }
+  .main { min-width: 0; }
+
+  .spark path { fill: none; stroke-width: 1.6; }
+
+  @media (max-width: 980px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .nav-links { display: none !important; }
+    .brand-text { display: none !important; }
+    .detail-grid { grid-template-columns: 1fr !important; }
+    .detail-right { order: 2; }
+    .detail-right .card[style*="sticky"] { position: static !important; }
+    .detail-right-sticky { position: static !important; max-height: none !important; overflow-y: visible !important; padding-right: 0 !important; }
+  }
+
+  .bottom-nav { display: none; }
+  .bet-fab { display: none; }
+
+  @media (max-width: 768px) {
+    .market-grid { grid-template-columns: 1fr !important; }
+    .case-grid { flex-direction: column !important; }
+    .detail-grid { grid-template-columns: 1fr !important; }
+    .detail-right { order: 2; }
+    .portfolio-stats { grid-template-columns: 1fr 1fr !important; }
+    .profile-stats { grid-template-columns: repeat(3, 1fr) !important; gap: 12px !important; }
+    .podium { grid-template-columns: 1fr !important; }
+    .podium > .card { height: auto !important; }
+    .detail-right .card[style*="sticky"] { position: static !important; }
+    .compact-vol, .compact-head span:nth-child(6) { display: none !important; }
+    body { padding-bottom: 64px; }
+    .bottom-nav { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 64px; z-index: 90; background: #111827; border-top: 1px solid #1F2937; }
+    .bet-fab { display: flex; position: fixed; right: 18px; bottom: 80px; width: 56px; height: 56px; z-index: 85; border-radius: 50%; background: var(--indigo); color: #fff; align-items: center; justify-content: center; box-shadow: 0 8px 24px -6px rgba(91,107,245,0.6); }
+    .market-grid .spark { display: none !important; }
+    .market-grid .card-odds { font-size: 26px !important; }
+    .card-quickbets { display: none !important; }
+    .card-betbtn { display: inline-flex !important; }
+    .wia-note { display: none !important; }
+  }
+
+  @media (max-width: 600px) {
+    .hero-title { font-size: 22px !important; }
+    .hero-stats { display: none !important; }
+    .nav-search { display: none !important; }
+    .nav-hide-sm { display: none !important; }
+    .compact-spark, .compact-head span:nth-child(3) { display: none !important; }
+    section[style*="32px 32px 0"] { padding-left: 18px !important; padding-right: 18px !important; }
+  }
+</style>
+
+<!-- React + Babel + Chart.js (CDN, no build step) -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/chart.js@4.4.0/dist/chart.umd.js"></script>
+
+<!-- API client + bootstrap (plain JS, runs before the JSX bundle) -->
+<script src="api.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react" src="data.jsx"></script>
+  <script type="text/babel" data-presets="react" src="components.jsx"></script>
+  <script type="text/babel" data-presets="react" src="pages.jsx"></script>
+  <script type="text/babel" data-presets="react" src="app.jsx"></script>
+</body>
+</html>

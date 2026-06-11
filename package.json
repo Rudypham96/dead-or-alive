@@ -1,0 +1,20 @@
+{
+  "name": "dead-or-alive",
+  "version": "1.0.0",
+  "description": "Dead or Alive — prediction market on whether AI wipes out specific companies. Full-stack: Express + SQLite backend, React (CDN) frontend.",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "seed": "node server/seed.js",
+    "test": "node test/e2e.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "ethers": "^6.13.5",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
