@@ -251,6 +251,67 @@ try {
   r = await api("GET", "/api/me");
   check("escrow + winnings credited after resolution", r.data.user.balance >= balBeforeResolve + 25, "balance " + r.data.user.balance);
 
+  // ===================== ORDER BOOK =====================
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "booker" });
+  let bk = (await api("GET", "/api/markets/30/orderbook")).data;
+  check("order book endpoint returns sides", Array.isArray(bk.dead) && Array.isArray(bk.alive));
+  const bkStart = bk.dead.length;
+  // rest a DEAD limit below market so it sits in the book
+  let bkMkt = (await api("GET", "/api/markets/30")).data.market;
+  const bkLimit = Math.round((bkMkt.death - 0.03) * 100) / 100;
+  await api("POST", "/api/orders", { marketId: 30, side: "DEAD", limitPrice: bkLimit, stake: 45 });
+  bk = (await api("GET", "/api/markets/30/orderbook")).data;
+  check("resting order appears in the book", bk.dead.length === bkStart + 1, JSON.stringify(bk.dead));
+  check("book level has stake + shares", bk.dead.length > 0 && bk.dead[0].stake > 0 && bk.dead[0].shares > 0);
+
+  // ===================== MY CHALLENGES =====================
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "duelistA" });
+  r = await api("POST", "/api/challenges", { marketId: 40, side: "DEAD", stake: 60 });
+  const myChId = r.data.challenge.id;
+  r = await api("GET", "/api/challenges/mine");
+  check("my-challenges lists challenges I created", r.data.challenges.some((c) => c.id === myChId && c.yourSide === "DEAD"));
+  // opponent accepts, then both see it active
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "duelistB" });
+  await api("POST", "/api/challenges/" + myChId + "/accept");
+  r = await api("GET", "/api/challenges/mine");
+  check("opponent sees accepted challenge as active", r.data.challenges.some((c) => c.id === myChId && c.status === "active" && c.opponent === "duelistA"));
+
+  // ===================== REAL-TIME STREAM (SSE) =====================
+  {
+    const ac = new AbortController();
+    const got = [];
+    const streamP = (async () => {
+      const sr = await fetch(BASE + "/api/stream?market=50", { signal: ac.signal, headers: { accept: "text/event-stream" } });
+      const reader = sr.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const ev = {}; chunk.split("\n").forEach((l) => { if (l.startsWith("event:")) ev.event = l.slice(6).trim(); });
+          if (ev.event) got.push(ev.event);
+        }
+      }
+    })().catch(() => {});
+    await new Promise((r) => setTimeout(r, 400));
+    cookie = "";
+    await api("POST", "/api/auth/dev", { username: "streamer" });
+    await api("POST", "/api/bets", { marketId: 50, side: "DEAD", amount: 600 });
+    await new Promise((r) => setTimeout(r, 600));
+    ac.abort();
+    await streamP;
+    check("SSE emits presence on connect", got.includes("presence"));
+    check("SSE streams a bet event", got.includes("bet"));
+    check("SSE streams a price update", got.includes("price"));
+  }
+
   console.log(`\n${fail === 0 ? "ALL PASSED" : "FAILED"} — ${pass} passed, ${fail} failed\n`);
 } catch (e) {
   console.error("\nTest harness error:", e.message);

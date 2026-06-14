@@ -34,10 +34,13 @@ import {
   placeOrder,
   cancelOrder,
   getOrders,
+  getOrderBook,
   createChallenge,
   acceptChallenge,
+  getMyChallenges,
   FEE_RATE,
 } from "./engine.js";
+import { onEvent, emitEvent } from "./events.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -300,8 +303,75 @@ app.get("/api/admin/stats", requireAdmin, (req, res) => {
   ok(res, { users, openBets, feesCollected: fees, marketsResolved: resolved, feeRate: FEE_RATE });
 });
 
+// ---------------- Order book ----------------
+app.get("/api/markets/:id/orderbook", (req, res) => {
+  const book = getOrderBook(Number(req.params.id));
+  if (!book) return fail(res, 404, "market not found");
+  ok(res, book);
+});
+
+// ---------------- My challenges ----------------
+app.get("/api/challenges/mine", requireUser, (req, res) => ok(res, { challenges: getMyChallenges(req.user.id) }));
+
+// ---------------- Real-time stream (SSE) ----------------
+// One event source per browser. Domain events from the engine fan out to every
+// client. `?market=<id>` lets us count "who's watching" per market (presence).
+const sseClients = new Set();
+const presence = new Map(); // marketId -> viewer count
+
+function broadcastPresence() {
+  const counts = {};
+  for (const [mid, n] of presence) if (n > 0) counts[mid] = n;
+  emitEvent({ kind: "presence", counts });
+}
+
+function sseSend(res, evt) {
+  try {
+    res.write(`event: ${evt.kind}\n`);
+    res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  } catch {
+    /* client gone; cleanup happens on 'close' */
+  }
+}
+
+// Forward every engine event to every connected browser.
+onEvent((evt) => {
+  for (const c of sseClients) sseSend(c.res, evt);
+});
+
+app.get("/api/stream", (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(`retry: 3000\n\n`);
+
+  const marketId = req.query.market !== undefined && req.query.market !== "" ? Number(req.query.market) : null;
+  const client = { res, marketId };
+  sseClients.add(client);
+  if (marketId != null) {
+    presence.set(marketId, (presence.get(marketId) || 0) + 1);
+    broadcastPresence();
+  }
+  // send a hello so the client knows it's live + current presence
+  sseSend(res, { kind: "hello", ts: Date.now() });
+
+  const ping = setInterval(() => res.write(`: ping\n\n`), 25000); // keep intermediaries from closing it
+
+  req.on("close", () => {
+    clearInterval(ping);
+    sseClients.delete(client);
+    if (marketId != null) {
+      presence.set(marketId, Math.max(0, (presence.get(marketId) || 1) - 1));
+      broadcastPresence();
+    }
+  });
+});
+
 // ---------------- Health ----------------
-app.get("/api/health", (req, res) => ok(res, { ok: true, ts: Date.now() }));
+app.get("/api/health", (req, res) => ok(res, { ok: true, ts: Date.now(), viewers: sseClients.size }));
 
 // ---------------- Static frontend ----------------
 app.use(express.static(PUBLIC_DIR));

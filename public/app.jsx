@@ -10,6 +10,10 @@ function App() {
     __boot.me ? (__boot.me.address || "@" + __boot.me.username) : ""
   );
   const [marketTick, setMarketTick] = useState(0); // re-render trigger after live market sync
+  const [presence, setPresence] = useState({});    // marketId -> viewers watching now
+  const [liveFeed, setLiveFeed] = useState([]);     // recent real trades streamed from the server
+  const [challengesVersion, setChallengesVersion] = useState(0); // bump to refetch challenges
+  const [orderbookVersion, setOrderbookVersion] = useState(0);   // bump to refetch the order book
   const [shareTarget, setShareTarget] = useState(null);          // FEATURE 7
   const [betStreak, setBetStreak] = useState(Math.max(0, currentStreak(RESOLVED))); // FEATURE 1
 
@@ -39,6 +43,8 @@ function App() {
   const [openChallenges, setOpenChallenges] = useState(CHALLENGES);
   const [myChallenges, setMyChallenges] = useState(MY_CHALLENGES);
   const [incoming, setIncoming] = useState(INCOMING_CHALLENGES);
+  const [liveOpen, setLiveOpen] = useState(null); // real open challenges (null until first fetch)
+  const [liveMine, setLiveMine] = useState(null); // real challenges I'm in
 
   // ---- FEATURE 3a email / FEATURE 4 push bar ----
   const [showEmailModal, setShowEmailModal] = useState(false);
@@ -169,6 +175,52 @@ function App() {
     } catch (e) { /* stay as-is */ }
   }, []);
 
+  // ---- Challenges, backed by the real API ----
+  const mapOpenChallenge = (c) => ({
+    id: c.id,
+    challenger: lbUser(c.challenger),
+    market: MARKETS.find((m) => m.id === c.marketId) || marketByName(c.market),
+    challengerSide: c.challengerSide,
+    stake: c.stake,
+    createdMinsAgo: c.createdAt ? Math.max(0, Math.round((Date.now() - c.createdAt) / 60000)) : 0,
+  });
+  const mapMyChallenge = (c) => ({
+    id: c.id,
+    yourSide: c.yourSide,
+    market: MARKETS.find((m) => m.id === c.marketId) || marketByName(c.market),
+    opponent: c.opponent ? lbUser(c.opponent) : null,
+    stake: c.stake,
+    status: c.status,
+    outcome: c.outcome,
+  });
+  const refreshChallenges = useCallback(async () => {
+    if (!walletConnected) return;
+    try {
+      const [openR, mineR] = await Promise.all([window.API.challenges(), window.API.myChallenges()]);
+      setLiveOpen((openR.challenges || []).map(mapOpenChallenge));
+      setLiveMine((mineR.challenges || []).map(mapMyChallenge));
+    } catch (e) { /* keep last */ }
+  }, [walletConnected]);
+  useEffect(() => { refreshChallenges(); }, [refreshChallenges, challengesVersion]);
+
+  const apiSendChallenge = useCallback(async ({ market, yourSide, stake }) => {
+    if (!walletConnected) { showToast({ type: "wallet" }); return; }
+    try {
+      await window.API.createChallenge(market.id, yourSide, stake);
+      refreshMe(); refreshChallenges();
+      showToast({ type: "info", message: `Open challenge posted: ${yourSide} ${market.name} for $${stake}. Anyone can accept.` });
+    } catch (e) { showToast({ type: "error", message: e.message || "Challenge failed." }); }
+  }, [walletConnected, showToast, refreshMe, refreshChallenges]);
+
+  const apiAcceptChallenge = useCallback(async (c) => {
+    if (!walletConnected) { showToast({ type: "wallet" }); return; }
+    try {
+      await window.API.acceptChallenge(c.id);
+      refreshMe(); refreshChallenges();
+      showToast({ type: "connected", message: `Challenge accepted — $${c.stake} locked. Winner takes the pot, minus 2%.` });
+    } catch (e) { showToast({ type: "error", message: e.message || "Accept failed." }); }
+  }, [walletConnected, showToast, refreshMe, refreshChallenges]);
+
   // ---- FEATURE 5 paper mode ----
   const enablePaper = useCallback(() => {
     setPaperMode(true); try { localStorage.setItem("doa_paper", "1"); } catch (e) {}
@@ -260,18 +312,32 @@ function App() {
     showToast({ type: "info", message: `Declined @${c.from.username}'s challenge.` });
   }, [showToast]);
 
+  // Logged in → real challenges from the API; logged out → seeded demo so the
+  // page is never empty. Incoming/directed challenges aren't in the live model
+  // yet (all challenges are open-to-anyone), so that bucket is empty when authed.
+  const effectiveOpen = walletConnected ? (liveOpen || []) : openChallenges;
+  const effectiveMine = walletConnected ? (liveMine || []) : myChallenges;
+  const effectiveIncoming = walletConnected ? [] : incoming;
+  const myName = (walletAddress || "").replace(/^@/, "");
+  const challengeBadge = walletConnected
+    ? effectiveOpen.filter((c) => (c.challenger?.username || "") !== myName).length
+    : incoming.length;
+
   const social = {
     currentUser: CURRENT_USER,
     navigate, showToast,
     walletConnected, walletAddress, onConnect: handleConnectWallet,
     following, isFollowing, toggleFollow,
     getComments, addComment, upvoteComment, isUpvoted,
-    openChallenges, myChallenges, incoming,
-    acceptChallenge, sendChallenge, acceptIncoming, declineIncoming,
+    openChallenges: effectiveOpen, myChallenges: effectiveMine, incoming: effectiveIncoming,
+    acceptChallenge: walletConnected ? apiAcceptChallenge : acceptChallenge,
+    sendChallenge: walletConnected ? apiSendChallenge : sendChallenge,
+    acceptIncoming, declineIncoming,
     quickBet: handleBet, openShare,
     notifications, markNotificationRead, markAllNotificationsRead,
     paperMode, paperBalance, enablePaper, requestSwitchLive,
     syncMarket: syncMarketInPlace, refreshMe, balance,
+    presence, liveFeed, watching: (id) => presence[id] || 0, orderbookVersion,
   };
 
   // ---- FEATURE 3a email handlers ----
@@ -389,6 +455,41 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
+  // ---- Real-time stream (SSE) ----
+  // One EventSource, reconnected when you open a market so presence counts the
+  // right room. Global events (any market's trades, resolutions) arrive regardless.
+  const myNameRef = useRef("");
+  useEffect(() => { myNameRef.current = (walletAddress || "").replace(/^@/, ""); }, [walletAddress]);
+  const marketNameById = (id) => (MARKETS.find((m) => m.id === id) || {}).name || "a market";
+
+  const onLiveTrade = useCallback((d) => {
+    setLiveFeed((prev) => [{ ...d, _id: (d.at || 0) + ":" + (d.user || "") + ":" + Math.round((d.amt || 0) * 100) }, ...prev].slice(0, 80));
+    // whale alert for OTHER people's big moves
+    const mine = (d.user || "").replace(/^@/, "") === myNameRef.current;
+    if (!mine && (d.amt || 0) >= 500) {
+      const verb = d.action === "sold" ? "sold" : "bet";
+      showToast({ type: "info", message: `🐳 @${(d.user || "someone").replace(/^@/, "")} just ${verb} $${Math.round(d.amt).toLocaleString()} ${d.side} on ${marketNameById(d.marketId)}` });
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    if (typeof window.EventSource === "undefined") return;
+    const marketParam = route.name === "market" && route.id != null ? route.id : "";
+    const es = new EventSource("/api/stream?market=" + encodeURIComponent(marketParam));
+    es.addEventListener("price", (e) => { try { syncMarketInPlace(JSON.parse(e.data).market); } catch (x) {} });
+    es.addEventListener("market:new", (e) => { try { syncMarketInPlace(JSON.parse(e.data).market); } catch (x) {} });
+    es.addEventListener("bet", (e) => { try { onLiveTrade(JSON.parse(e.data)); } catch (x) {} });
+    es.addEventListener("fill", (e) => { try { onLiveTrade(JSON.parse(e.data)); } catch (x) {} });
+    es.addEventListener("trade", (e) => { try { onLiveTrade(JSON.parse(e.data)); } catch (x) {} });
+    es.addEventListener("presence", (e) => { try { setPresence(JSON.parse(e.data).counts || {}); } catch (x) {} });
+    es.addEventListener("resolution", (e) => {
+      try { const d = JSON.parse(e.data); if (d.market) syncMarketInPlace(d.market); } catch (x) {}
+    });
+    es.addEventListener("challenge", () => setChallengesVersion((v) => v + 1));
+    es.addEventListener("order", () => setOrderbookVersion((v) => v + 1));
+    return () => es.close();
+  }, [route.name, route.id, syncMarketInPlace, onLiveTrade]);
+
   const walletProps = { walletConnected, walletAddress, onConnect: handleConnectWallet };
 
   let page;
@@ -420,7 +521,7 @@ function App() {
 
   return (
     <SocialContext.Provider value={social}>
-      <TopNav route={route} navigate={navigate} balance={balance} challengeBadge={incoming.length} {...walletProps}/>
+      <TopNav route={route} navigate={navigate} balance={balance} challengeBadge={challengeBadge} {...walletProps}/>
       {/* FEATURE 4 — push notification bar */}
       {showPushBar && <NotificationBar onEnable={enablePush} onDismiss={dismissPush}/>}
       {/* FEATURE 5 — paper mode banner */}

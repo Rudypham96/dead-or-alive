@@ -1,9 +1,23 @@
 # Dead or Alive — Session Handoff Document
-*Created: 2026-06-05 | Updated: 2026-06-11 with full-stack build + trading mechanics*
+*Created: 2026-06-05 | Updated: 2026-06-11 — full-stack + trading + real-time*
 
 ---
 
-## ⚡ UPDATE 2026-06-11 (later) — TRADING MECHANICS SHIPPED
+## ⚡ UPDATE 2026-06-11 (latest) — IT'S LIVE & MULTIPLAYER NOW
+
+Three more features. Tested (60-check e2e suite incl. an SSE round-trip, all passing) and verified across two browser tabs.
+
+1. **Real-time everything (Server-Sent Events).** `GET /api/stream`. When anyone bets/sells/fills, every viewer's odds tick with no refresh. Per-market "X watching" presence. Live activity feed of real trades. Whale toast when someone else moves $500+. Verified live: bob bet $600 in one tab, alice's odds + activity feed updated instantly in another.
+2. **Real order book.** `GET /api/markets/:id/orderbook` aggregates real resting limit orders into DEAD/ALIVE depth. Market page renders it live — place/cancel an order and it appears/vanishes for everyone. (Replaced the old fake synthetic book.)
+3. **Challenges wired end to end.** Create from a market's Head-to-Head card (stake escrowed), it streams live to the Challenges page, anyone accepts the other side, winner takes the pot minus 2% on resolution. Verified live: bob created → carol saw it appear → accepted ($100 escrowed, status active for both).
+
+Also: paper bets no longer move the real shared line (correctness, since the line is now broadcast to everyone). New SSE event kinds: price, bet, fill, trade, order, presence, resolution, challenge, market:new.
+
+Browser-testing note: two tabs in the same Chrome share one cookie jar, so to test two *distinct* users you must log in sequentially (or use the e2e suite, which uses separate sessions). Real users on separate machines are unaffected.
+
+---
+
+## ⚡ UPDATE 2026-06-11 (earlier) — TRADING MECHANICS SHIPPED
 
 Four more features, all tested (52-check e2e suite, all passing) and verified in the browser:
 

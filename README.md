@@ -17,7 +17,7 @@ npm start
 No build step, no database setup, no API keys. `npm start` creates the SQLite file and seeds 120 markets on first run.
 
 ```bash
-npm test     # 52-check end-to-end suite against a throwaway DB
+npm test     # 60-check end-to-end suite against a throwaway DB
 ```
 
 Requires **Node 22.5+** (uses the built-in `node:sqlite` module — no native compilation, no `better-sqlite3`).
@@ -57,6 +57,26 @@ test/e2e.js   boots the real server and drives the whole flow
 `netPayout = winningShares × $1.00 × 0.98`
 
 The consistent fee rule everywhere: **the platform takes 2% of whatever comes back to you** — resolution payouts, early-exit proceeds, challenge pots. Losers never pay.
+
+### Live, multiplayer feel
+
+The platform pushes updates over Server-Sent Events (`GET /api/stream`), so the screen moves on its own:
+
+- **Live odds** — when anyone bets, sells, or a limit order fills, every viewer's price ticks without a refresh.
+- **Live activity feed** — each market's feed shows real trades as they land, newest first, with a live dot.
+- **Presence** — a "X watching" count per market, driven by open stream connections.
+- **Whale alerts** — a bet (or sale) of $500+ by another trader fires a toast for everyone watching.
+- **Live order book + challenges** — both update in place as orders rest/fill/cancel and as challenges are created or accepted.
+
+`?market=<id>` on the stream scopes presence to the market you're viewing; global events (any trade, resolution) arrive regardless.
+
+### Order book
+
+`GET /api/markets/:id/orderbook` aggregates real resting limit orders into DEAD and ALIVE depth by price level. The market detail page renders it live — place a limit order and it appears in the book for everyone; cancel or fill it and it disappears. Empty until someone rests an order (honest — no fake depth).
+
+### Challenges (head-to-head)
+
+Real P2P duels. Create an open challenge from a market's Head-to-Head card (stake escrowed), anyone can accept the other side (`/api/challenges`, `/api/challenges/mine`, `/api/challenges/:id/accept`). On resolution the winner takes the pot minus 2%; unaccepted challenges refund the challenger. New challenges stream live to the Challenges page.
 
 ### Trust layer
 
@@ -101,6 +121,9 @@ Mirrors the live Vercel deployment's contract so the two converge, then extends 
 | POST | `/api/orders` | `{ marketId, side, limitPrice, stake }` — escrows stake, fills when marketable |
 | DELETE | `/api/orders/:id` | cancel a resting order, refund escrow |
 | GET | `/api/resolutions` | public resolution history: outcome, reason, source, payout totals |
+| GET | `/api/markets/:id/orderbook` | real resting-order depth (DEAD + ALIVE levels) |
+| GET | `/api/challenges/mine` | challenges you created or accepted (auth required) |
+| GET | `/api/stream?market=<id>` | SSE: price, bet, fill, trade, order, presence, resolution, challenge events |
 | GET | `/api/leaderboard` | `{ leaderboard }` — ranked by realized P&L |
 | GET | `/api/activity` | `{ events }` — recent real bets |
 | GET/POST | `/api/markets/:id/comments` | read / post (post requires auth) |
@@ -139,7 +162,9 @@ DOA_ADMIN_SECRET=<sha256-of-your-password>
 
 - **House credits, not real money.** No deposit/withdrawal, no on-chain settlement, no smart contracts yet. The faucet exists so the loop is fully playable today.
 - **Money stored as floats.** Fine for a bootstrap; move to integer cents (or on-chain units) before real money.
-- **Price impact is a transparent nudge, not a true AMM.** No LMSR/CPMM. Limit orders fill against the line (house liquidity), not against each other — there's no user-to-user order book matching yet. Good enough to make the market feel real; revisit when liquidity matters.
+- **Price impact is a transparent nudge, not a true AMM.** No LMSR/CPMM. Limit orders fill against the line (house liquidity), not against each other — the order book shows real resting demand but there's no user-to-user matching yet. Good enough to make the market feel real; revisit when liquidity matters.
+- **Real-time is single-process.** The SSE event bus lives in one Node process. Fine for one server; scaling horizontally would need a shared pub/sub (Redis) so events fan out across instances.
+- **Paper bets don't move the shared line** (they would let virtual money distort a live market everyone sees) — they spend virtual funds and show in your portfolio only.
 - **Comments/leaderboard/activity** show rich seeded demo content alongside real data so the app never looks empty pre-launch. Real user actions persist and rank correctly.
 - Multi-sig resolution, KYC, referrals, and email/SMS notifications remain parked (see `HANDOFF.md`).
 

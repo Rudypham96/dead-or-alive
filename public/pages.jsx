@@ -323,56 +323,87 @@ function VolumeBars({ series, height = 80 }) {
   return <div style={{ position: "relative", height }}><canvas ref={ref}/></div>;
 }
 
-// Order book — synthetic from current price
-function OrderBook({ market, side }) {
-  const m = market;
-  const mid = side === "DEAD" ? m.death : m.survives;
-  const rng = useMemo(() => mulberry32(m.id * 31 + (side === "DEAD" ? 1 : 2)), [m.id, side]);
-  const rows = useMemo(() => {
-    const make = (dir) => {
-      const out = [];
-      let price = mid;
-      for (let i = 0; i < 6; i++) {
-        price += (dir === "ask" ? 1 : -1) * (0.005 + rng() * 0.012);
-        const size = Math.round(50 + rng() * 4500);
-        out.push({ price: Math.max(0.01, Math.min(0.99, price)), size });
-      }
-      return out;
-    };
-    return { asks: make("ask").reverse(), bids: make("bid") };
-  }, [mid, rng]);
+// "X watching now" — live presence from the SSE stream.
+function WatchingPill({ marketId }) {
+  const social = React.useContext(SocialContext);
+  const n = (social?.watching && social.watching(marketId)) || 0;
+  const shown = Math.max(1, n); // you're here, so at least 1
+  return (
+    <span className="pill" style={{ color: "var(--text-muted)" }} title="People viewing this market right now">
+      <span style={{ display: "inline-flex", width: 6, height: 6, borderRadius: "50%", background: "var(--indigo)", marginRight: 2 }}/>
+      {shown} watching
+    </span>
+  );
+}
 
-  const Row = ({ price, size, dir }) => {
-    const color = dir === "ask" ? (side === "DEAD" ? "var(--dead)" : "var(--alive)") : "var(--text-muted)";
-    return (
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", padding: "5px 12px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", borderBottom: "1px solid rgba(31,41,55,0.5)" }}>
-        <span style={{ color, fontWeight: 500 }}>{(price * 100).toFixed(1)}¢</span>
-        <span style={{ color: "var(--text)", textAlign: "right" }}>{size.toLocaleString()}</span>
-        <span style={{ color: "var(--text-muted)", textAlign: "right" }}>{fmtMoney(size * price)}</span>
+// Order book — REAL resting limit orders, re-fetched live on price ticks and
+// order events (place/fill/cancel) streamed over SSE.
+function OrderBook({ market }) {
+  const social = React.useContext(SocialContext);
+  const m = market;
+  const [book, setBook] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    window.API.orderbook(m.id).then((b) => { if (alive) setBook(b); }).catch(() => {});
+    return () => { alive = false; };
+  }, [m.id, m.death, social?.orderbookVersion]); // refreshes when the line moves or any order changes
+
+  const dead = (book && book.dead) || [];
+  const alive = (book && book.alive) || [];
+  const total = dead.length + alive.length;
+
+  const Col = ({ title, levels, color }) => (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 600, color, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid var(--border)" }}>
+        {title} <span style={{ color: "var(--text-muted)" }}>· {levels.length}</span>
       </div>
-    );
-  };
+      {levels.length === 0 ? (
+        <div style={{ padding: "14px 12px", fontSize: 11, color: "var(--text-dim)" }}>No resting orders</div>
+      ) : (
+        levels.slice(0, 7).map((l, i) => (
+          <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr", padding: "5px 12px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", borderBottom: "1px solid rgba(31,41,55,0.4)" }}>
+            <span style={{ color, fontWeight: 500 }}>{(l.price * 100).toFixed(0)}¢</span>
+            <span style={{ color: "var(--text)", textAlign: "right" }}>{fmtMoney(l.stake)}</span>
+          </div>
+        ))
+      )}
+    </div>
+  );
 
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>Order book</span>
-        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{side === "DEAD" ? "AI kills it" : "Survives"} side</span>
+        <span className="pill live" style={{ padding: "2px 8px", fontSize: 9 }}><span className="dot"/>LIVE</span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", padding: "8px 12px", fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", background: "var(--bg-elev)" }}>
-        <span>Price</span><span style={{ textAlign: "right" }}>Size</span><span style={{ textAlign: "right" }}>Total</span>
+      <div style={{ padding: "8px 12px", textAlign: "center", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", background: "rgba(91,107,245,0.06)", borderBottom: "1px solid var(--border)" }}>
+        <span style={{ color: "var(--dead)", fontWeight: 600 }}>{(m.death * 100).toFixed(1)}¢ DEAD</span>
+        <span style={{ color: "var(--text-muted)", margin: "0 8px" }}>·</span>
+        <span style={{ color: "var(--alive)", fontWeight: 600 }}>{(m.survives * 100).toFixed(1)}¢ ALIVE</span>
+        <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: 8 }}>last</span>
       </div>
-      {rows.asks.map((r, i) => <Row key={"a" + i} {...r} dir="ask"/>)}
-      <div style={{ padding: "8px 12px", textAlign: "center", fontSize: 13, fontFamily: "'JetBrains Mono', monospace", color: side === "DEAD" ? "var(--dead)" : "var(--alive)", background: "rgba(91,107,245,0.06)", borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", fontWeight: 600 }}>
-        {(mid * 100).toFixed(1)}¢ <span style={{ fontSize: 10, color: "var(--text-muted)", marginLeft: 8 }}>last</span>
+      <div style={{ display: "flex", borderTop: "1px solid var(--border)" }}>
+        <Col title="DEAD bids" levels={dead} color="var(--dead)"/>
+        <div style={{ width: 1, background: "var(--border)" }}/>
+        <Col title="ALIVE bids" levels={alive} color="var(--alive)"/>
       </div>
-      {rows.bids.map((r, i) => <Row key={"b" + i} {...r} dir="bid"/>)}
+      {total === 0 && (
+        <div style={{ padding: "10px 12px", fontSize: 11, color: "var(--text-muted)", textAlign: "center", borderTop: "1px solid var(--border)" }}>
+          No resting limit orders yet — place one from the ticket to seed the book.
+        </div>
+      )}
     </div>
   );
 }
 
 function ActivityFeed({ market }) {
-  const items = useMemo(() => {
+  const social = React.useContext(SocialContext);
+  // real trades streamed in for THIS market (newest first)
+  const live = (social?.liveFeed || [])
+    .filter((e) => e.marketId === market.id)
+    .map((e) => ({ live: true, user: "@" + (e.user || "trader").replace(/^@/, ""), side: e.side, amt: e.amt, price: e.price, at: e.at, action: e.action }));
+  // seeded backdrop so a quiet market still shows depth
+  const seeded = useMemo(() => {
     const r = mulberry32(market.id * 17 + 99);
     const out = [];
     for (let i = 0; i < 10; i++) {
@@ -385,6 +416,8 @@ function ActivityFeed({ market }) {
     }
     return out;
   }, [market.id, market.death, market.survives]);
+  const items = [...live, ...seeded].slice(0, 12);
+  const ago = (at) => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 60 ? s + "s" : Math.round(s / 60) + "m"; };
   return (
     <div className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between" }}>
@@ -393,16 +426,17 @@ function ActivityFeed({ market }) {
       </div>
       <div>
         {items.map((it, i) => (
-          <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid rgba(31,41,55,0.5)", fontSize: 12 }}>
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid rgba(31,41,55,0.5)", fontSize: 12, background: it.live ? "rgba(91,107,245,0.06)" : "transparent" }}>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {it.live && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--indigo)", flexShrink: 0 }}/>}
               <span style={{ color: "var(--text)", fontWeight: 500 }}>{it.user}</span>
-              <span style={{ color: "var(--text-muted)" }}>bet</span>
-              <span className="font-mono" style={{ color: "var(--text)" }}>${it.amt}</span>
+              <span style={{ color: "var(--text-muted)" }}>{it.action === "sold" ? "sold" : "bet"}</span>
+              <span className="font-mono" style={{ color: "var(--text)" }}>${Math.round(it.amt).toLocaleString()}</span>
               <span style={{ color: it.side === "DEAD" ? "var(--dead)" : "var(--alive)", fontWeight: 600 }}>{it.side}</span>
             </div>
             <div style={{ display: "flex", gap: 12, color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>
               <span>@ {(it.price * 100).toFixed(1)}¢</span>
-              <span>{it.minsAgo}m</span>
+              <span>{it.live ? ago(it.at) : it.minsAgo + "m"}</span>
             </div>
           </div>
         ))}
@@ -1026,6 +1060,7 @@ function MarketDetailPage({ marketId, navigate, onConfirmBet, walletConnected, o
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
               <CatTag category={m.category}/>
               <span className="pill live"><span className="dot"/>LIVE</span>
+              <WatchingPill marketId={m.id}/>
             </div>
             <h1 className="font-display" style={{ margin: 0, fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em" }}>Will AI kill {m.name}?</h1>
           </div>

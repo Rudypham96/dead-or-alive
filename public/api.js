@@ -46,8 +46,10 @@
     comments: (id) => get("/api/markets/" + id + "/comments"),
     postComment: (id, text) => post("/api/markets/" + id + "/comments", { text }),
     challenges: () => get("/api/challenges"),
+    myChallenges: () => get("/api/challenges/mine"),
     createChallenge: (marketId, side, stake) => post("/api/challenges", { marketId, side, stake }),
     acceptChallenge: (id) => post("/api/challenges/" + id + "/accept"),
+    orderbook: (id) => get("/api/markets/" + id + "/orderbook"),
     // admin
     adminResolve: (marketId, outcome, adminSecret, reason, sourceUrl) =>
       post("/api/admin/resolve", { marketId, outcome, reason, sourceUrl }, { "x-admin-secret": adminSecret }),

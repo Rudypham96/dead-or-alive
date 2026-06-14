@@ -9,8 +9,10 @@
 
 import { db, marketRowToApi } from "./db.js";
 import { mulberry32, makeSeries, slugify, logoFor } from "./markets-seed.js";
+import { emitEvent } from "./events.js";
 
 export const FEE_RATE = 0.02;
+export const WHALE_THRESHOLD = 500; // bets >= this trigger a "whale" alert on the wire
 const IMPACT_SENSITIVITY = 0.6;
 const now = () => Date.now();
 
@@ -58,24 +60,37 @@ export function placeBet(user, marketId, side, stakeRaw, paper = false) {
       )
       .run(user.id, marketId, side, stake, price, shares, paper ? 1 : 0, now());
 
-    // move the line + extend the series + bump market stats
-    const newDeath = applyPriceImpact(market, side, stake);
-    const series = JSON.parse(market.series);
-    series.push(newDeath);
-    while (series.length > 60) series.shift();
-    const change24h = newDeath - series[Math.max(0, series.length - 24)];
-    db.prepare(
-      `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?,
-         volume = volume + ?, traders = traders + 1 WHERE id = ?`
-    ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, stake, marketId);
+    // Paper trades don't move the real shared line (it's broadcast live to
+    // everyone) — they only spend virtual funds. Real bets move it.
+    if (!paper) {
+      const newDeath = applyPriceImpact(market, side, stake);
+      const series = JSON.parse(market.series);
+      series.push(newDeath);
+      while (series.length > 60) series.shift();
+      const change24h = newDeath - series[Math.max(0, series.length - 24)];
+      db.prepare(
+        `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?,
+           volume = volume + ?, traders = traders + 1 WHERE id = ?`
+      ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, stake, marketId);
+    }
 
     const bet = db.prepare("SELECT * FROM bets WHERE id = ?").get(info.lastInsertRowid);
     return { bet, balance };
   });
 
   const { bet, balance } = tx();
-  matchOrders(marketId); // the line moved — fill any limit orders that are now marketable
-  return { bet: betToApi(bet, market.name), market: marketRowToApi(getMarket(marketId)), balance };
+  if (!paper) matchOrders(marketId); // the line moved — fill any now-marketable limit orders
+  const apiMarket = marketRowToApi(getMarket(marketId));
+  if (!paper) {
+    emitEvent({ kind: "bet", marketId, user: user.username, side, amt: round2(stake), price: bet.price, at: bet.created_at });
+    emitMarket(apiMarket);
+  }
+  return { bet: betToApi(bet, market.name), market: apiMarket, balance };
+}
+
+// Broadcast a fresh market snapshot so every viewer's odds tick live.
+function emitMarket(apiMarket) {
+  emitEvent({ kind: "price", market: apiMarket });
 }
 
 // Close an open position early: sell all shares back at the current price.
@@ -105,28 +120,32 @@ export function closeBet(user, betId) {
 
     if (!bet.paper) {
       db.prepare("UPDATE users SET balance = ROUND(balance + ?, 2) WHERE id = ?").run(net, user.id);
+      // selling DEAD = pressure toward ALIVE and vice versa (paper exits don't move the real line)
+      const newDeath = applyPriceImpact(market, bet.side === "DEAD" ? "ALIVE" : "DEAD", proceeds);
+      const series = JSON.parse(market.series);
+      series.push(newDeath);
+      while (series.length > 60) series.shift();
+      const change24h = newDeath - series[Math.max(0, series.length - 24)];
+      db.prepare(
+        `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?, volume = volume + ? WHERE id = ?`
+      ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, proceeds, bet.market_id);
     }
-
-    // selling DEAD = pressure toward ALIVE and vice versa
-    const newDeath = applyPriceImpact(market, bet.side === "DEAD" ? "ALIVE" : "DEAD", proceeds);
-    const series = JSON.parse(market.series);
-    series.push(newDeath);
-    while (series.length > 60) series.shift();
-    const change24h = newDeath - series[Math.max(0, series.length - 24)];
-    db.prepare(
-      `UPDATE markets SET death = ?, survives = ?, series = ?, change24h = ?, volume = volume + ? WHERE id = ?`
-    ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, proceeds, bet.market_id);
 
     return db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
   });
 
   const balance = tx();
-  matchOrders(bet.market_id);
+  if (!bet.paper) matchOrders(bet.market_id);
+  const apiMarket = marketRowToApi(getMarket(bet.market_id));
+  if (!bet.paper) {
+    emitEvent({ kind: "trade", marketId: bet.market_id, user: user.username, side: bet.side, amt: round2(proceeds), price, at: now(), action: "sold" });
+    emitMarket(apiMarket);
+  }
   return {
     closed: { id: bet.id, market: market.name, side: bet.side, shares: round2(bet.shares),
       soldPrice: price, grossProceeds: round2(proceeds), fee, netProceeds: net,
       pnl: round2(net - bet.stake) },
-    market: marketRowToApi(getMarket(bet.market_id)),
+    market: apiMarket,
     balance,
   };
 }
@@ -201,7 +220,9 @@ export function resolveMarket(marketId, outcomeRaw, reason = null, sourceUrl = n
     };
   });
 
-  return tx();
+  const summary = tx();
+  emitEvent({ kind: "resolution", marketId, market: marketRowToApi(getMarket(marketId)), outcome, reason });
+  return summary;
 }
 
 // Settle every active/open challenge on a market. Winner takes the pot (2 * stake)
@@ -251,7 +272,9 @@ export function createChallenge(user, marketId, side, stakeRaw) {
       .run(user.id, marketId, side, stake, now());
     return db.prepare("SELECT * FROM challenges WHERE id = ?").get(info.lastInsertRowid);
   });
-  return tx();
+  const c = tx();
+  emitEvent({ kind: "challenge", action: "created", marketId, market: market.name, challenger: user.username, side, stake });
+  return c;
 }
 
 export function acceptChallenge(user, challengeId) {
@@ -266,7 +289,65 @@ export function acceptChallenge(user, challengeId) {
     db.prepare("UPDATE challenges SET opponent_id = ?, status = 'active' WHERE id = ?").run(user.id, c.id);
     return db.prepare("SELECT * FROM challenges WHERE id = ?").get(c.id);
   });
-  return tx();
+  const accepted = tx();
+  emitEvent({ kind: "challenge", action: "accepted", marketId: c.market_id, opponent: user.username, stake: c.stake });
+  return accepted;
+}
+
+// Challenges where the given user is challenger or opponent, newest first.
+export function getMyChallenges(userId) {
+  const rows = db
+    .prepare(
+      `SELECT c.*, m.name AS market_name, m.days_left AS days_left,
+              cu.username AS challenger_name, ou.username AS opponent_name
+       FROM challenges c
+       JOIN markets m ON m.id = c.market_id
+       JOIN users cu ON cu.id = c.challenger_id
+       LEFT JOIN users ou ON ou.id = c.opponent_id
+       WHERE c.challenger_id = ? OR c.opponent_id = ?
+       ORDER BY c.created_at DESC LIMIT 50`
+    )
+    .all(userId, userId);
+  return rows.map((c) => {
+    const iAmChallenger = c.challenger_id === userId;
+    let outcome = null;
+    if (c.status === "resolved" && c.outcome && c.outcome !== "PUSH") {
+      outcome = String(c.outcome) === String(userId) ? "WON" : "LOST";
+    }
+    return {
+      id: c.id,
+      marketId: c.market_id,
+      market: c.market_name,
+      daysLeft: c.days_left,
+      yourSide: iAmChallenger ? c.challenger_side : c.challenger_side === "DEAD" ? "ALIVE" : "DEAD",
+      opponent: iAmChallenger ? c.opponent_name : c.challenger_name,
+      stake: c.stake,
+      status: c.status,
+      outcome,
+    };
+  });
+}
+
+// Aggregate resting limit orders into an order book by side and price level.
+export function getOrderBook(marketId) {
+  const market = getMarket(marketId);
+  if (!market) return null;
+  const rows = db
+    .prepare(
+      `SELECT side, limit_price, SUM(stake) AS stake, COUNT(*) AS count
+       FROM orders WHERE market_id = ? AND status = 'open'
+       GROUP BY side, limit_price`
+    )
+    .all(marketId);
+  const dead = [];
+  const alive = [];
+  for (const r of rows) {
+    const level = { price: r.limit_price, stake: round2(r.stake), shares: round2(r.stake / r.limit_price), count: r.count };
+    (r.side === "DEAD" ? dead : alive).push(level);
+  }
+  dead.sort((a, b) => b.price - a.price); // best (highest) DEAD bid first
+  alive.sort((a, b) => b.price - a.price); // best (highest) ALIVE bid first
+  return { marketId, lastDeath: market.death, lastSurvives: market.survives, dead, alive };
 }
 
 // ---- Read helpers shaped for the API ----
@@ -395,7 +476,9 @@ export function createMarket({ name, category, death, daysLeft, volume }) {
     return id;
   });
 
-  return marketRowToApi(getMarket(tx()));
+  const apiMarket = marketRowToApi(getMarket(tx()));
+  emitEvent({ kind: "market:new", market: apiMarket });
+  return apiMarket;
 }
 
 // ---- Limit orders ----
@@ -432,6 +515,7 @@ export function placeOrder(user, marketId, side, limitPriceRaw, stakeRaw) {
   const orderId = tx();
   matchOrders(marketId); // fills immediately if already marketable
   const order = db.prepare("SELECT * FROM orders WHERE id = ?").get(orderId);
+  emitEvent({ kind: "order", marketId, action: order.status === "filled" ? "filled" : "placed" });
   return {
     order: orderToApi(order, market.name),
     balance: db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance,
@@ -450,7 +534,9 @@ export function cancelOrder(user, orderId) {
     db.prepare("UPDATE orders SET status='cancelled', settled_at=? WHERE id=?").run(now(), o.id);
     return db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id).balance;
   });
-  return { cancelled: o.id, refunded: o.stake, balance: tx() };
+  const balance = tx();
+  emitEvent({ kind: "order", marketId: o.market_id, action: "cancelled" });
+  return { cancelled: o.id, refunded: o.stake, balance };
 }
 
 // Fill loop: oldest marketable order first; each fill moves the line, so
@@ -492,6 +578,9 @@ export function matchOrders(marketId) {
       ).run(newDeath, 1 - newDeath, JSON.stringify(series), change24h, order.stake, marketId);
     });
     tx();
+    const owner = db.prepare("SELECT username FROM users WHERE id = ?").get(order.user_id);
+    emitEvent({ kind: "fill", marketId, user: owner ? owner.username : "trader", side: order.side, amt: round2(order.stake), price, at: now() });
+    emitEvent({ kind: "price", market: marketRowToApi(getMarket(marketId)) });
     filled++;
   }
   return filled;
