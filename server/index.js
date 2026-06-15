@@ -45,14 +45,53 @@ import { onEvent, emitEvent } from "./events.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const PORT = Number(process.env.PORT || 3000);
+const IS_PROD = process.env.NODE_ENV === "production";
 
 // Admin auth: sha256 of the admin password. Default matches the value Nick shared
-// (so the same /admin password works); override with DOA_ADMIN_SECRET in prod.
-const ADMIN_SECRET =
-  process.env.DOA_ADMIN_SECRET ||
-  "73392d7280957074bb7e653c5f06d0f83417d6631e0db49d7ffca45bd0917fb3";
+// (so the same /admin password works locally); MUST be overridden in production.
+const DEFAULT_ADMIN_SECRET = "73392d7280957074bb7e653c5f06d0f83417d6631e0db49d7ffca45bd0917fb3";
+const ADMIN_SECRET = process.env.DOA_ADMIN_SECRET || DEFAULT_ADMIN_SECRET;
+
+// Refuse to boot insecurely in production. A default JWT secret = forgeable
+// sessions; a default admin secret = anyone can resolve markets and pay
+// themselves; dev login on = unlimited free funded accounts.
+if (IS_PROD) {
+  const problems = [];
+  if (!process.env.DOA_JWT_SECRET || process.env.DOA_JWT_SECRET === "dev-only-secret-change-me")
+    problems.push("DOA_JWT_SECRET is unset or default");
+  if (!process.env.DOA_ADMIN_SECRET || process.env.DOA_ADMIN_SECRET === DEFAULT_ADMIN_SECRET)
+    problems.push("DOA_ADMIN_SECRET is unset or default");
+  if (process.env.DOA_ALLOW_DEV_LOGIN === "1")
+    problems.push("DOA_ALLOW_DEV_LOGIN is enabled (wallet-less faucet accounts)");
+  if (problems.length) {
+    console.error("\n  REFUSING TO START in production with insecure config:");
+    for (const p of problems) console.error("   - " + p);
+    console.error("");
+    process.exit(1);
+  }
+}
+
+// Tiny in-process fixed-window rate limiter (no external dep). Per-key buckets.
+// Bypassed under the test runner so the suite isn't throttled.
+function rateLimit({ windowMs, max, key }) {
+  if (process.env.NODE_ENV === "test") return (req, res, next) => next();
+  const hits = new Map();
+  return (req, res, next) => {
+    const k = (key ? key(req) : req.ip) || "anon";
+    const t = Date.now();
+    let rec = hits.get(k);
+    if (!rec || t > rec.reset) { rec = { count: 0, reset: t + windowMs }; hits.set(k, rec); }
+    rec.count++;
+    if (hits.size > 5000) for (const [kk, v] of hits) if (t > v.reset) hits.delete(kk); // opportunistic prune
+    if (rec.count > max) return res.status(429).json({ error: "too many requests — slow down" });
+    next();
+  };
+}
+const authLimiter = rateLimit({ windowMs: 60_000, max: 60 });  // auth + admin endpoints
+const moneyLimiter = rateLimit({ windowMs: 60_000, max: 120, key: (req) => (req.user ? "u" + req.user.id : req.ip) });
 
 const app = express();
+app.set("trust proxy", 1); // so req.ip reflects the client behind a proxy
 app.use(express.json());
 app.use(cookieParser());
 app.use(attachUser);
@@ -82,7 +121,7 @@ app.get("/api/markets/:id", (req, res) => {
 // ---------------- Auth ----------------
 // GET /api/auth/nonce            -> bare nonce (live-contract compatible)
 // GET /api/auth/nonce?address=0x -> { nonce, message } to sign
-app.get("/api/auth/nonce", (req, res) => {
+app.get("/api/auth/nonce", authLimiter, (req, res) => {
   if (req.query.address) {
     try {
       return ok(res, issueNonce(req.query.address));
@@ -95,6 +134,7 @@ app.get("/api/auth/nonce", (req, res) => {
 
 app.post(
   "/api/auth/verify",
+  authLimiter,
   wrap((req, res) => {
     const { address, signature } = req.body || {};
     const user = verifyWalletSignature(address, signature);
@@ -106,6 +146,7 @@ app.post(
 
 app.post(
   "/api/auth/dev",
+  authLimiter,
   wrap((req, res) => {
     if (!ALLOW_DEV_LOGIN) return fail(res, 403, "dev login disabled");
     const user = devLogin((req.body || {}).username);
@@ -141,6 +182,7 @@ function publicUser(u) {
 app.post(
   "/api/bets",
   requireUser,
+  moneyLimiter,
   wrap((req, res) => {
     const { marketId, side, amount, paper } = req.body || {};
     const result = placeBet(req.user, Number(marketId), side, Number(amount), !!paper);
@@ -152,6 +194,7 @@ app.post(
 app.post(
   "/api/bets/:id/close",
   requireUser,
+  moneyLimiter,
   wrap((req, res) => {
     ok(res, closeBet(req.user, Number(req.params.id)));
   })
@@ -167,6 +210,7 @@ app.get("/api/orders", requireUser, (req, res) => ok(res, { orders: getOrders(re
 app.post(
   "/api/orders",
   requireUser,
+  moneyLimiter,
   wrap((req, res) => {
     const { marketId, side, limitPrice, stake } = req.body || {};
     ok(res, placeOrder(req.user, Number(marketId), side, Number(limitPrice), Number(stake)));
@@ -248,6 +292,7 @@ app.get("/api/challenges", (req, res) => {
 app.post(
   "/api/challenges",
   requireUser,
+  moneyLimiter,
   wrap((req, res) => {
     const { marketId, side, stake } = req.body || {};
     const c = createChallenge(req.user, Number(marketId), side, Number(stake));
@@ -265,19 +310,28 @@ app.post(
 );
 
 // ---------------- Admin (resolution console) ----------------
+// Constant-time secret comparison (no length/early-exit leak). Never reads the
+// secret from the query string — it would land in access/proxy logs.
+function adminSecretOk(provided) {
+  if (typeof provided !== "string" || provided.length === 0) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(ADMIN_SECRET);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 function requireAdmin(req, res, next) {
-  const secret = req.headers["x-admin-secret"] || (req.body || {}).adminSecret || req.query.adminSecret;
-  if (secret !== ADMIN_SECRET) return fail(res, 401, "admin authentication required");
+  const secret = req.headers["x-admin-secret"] || (req.body || {}).adminSecret;
+  if (!adminSecretOk(secret)) return fail(res, 401, "admin authentication required");
   next();
 }
 
-app.post("/api/admin/login", (req, res) => {
-  const secret = (req.body || {}).adminSecret;
-  ok(res, { ok: secret === ADMIN_SECRET });
+app.post("/api/admin/login", authLimiter, (req, res) => {
+  ok(res, { ok: adminSecretOk((req.body || {}).adminSecret) });
 });
 
 app.post(
   "/api/admin/resolve",
+  authLimiter,
   requireAdmin,
   wrap((req, res) => {
     const { marketId, outcome, reason, sourceUrl } = req.body || {};
@@ -288,6 +342,7 @@ app.post(
 // Create a new market live, no redeploy.
 app.post(
   "/api/admin/markets",
+  authLimiter,
   requireAdmin,
   wrap((req, res) => {
     const { name, category, death, daysLeft, volume } = req.body || {};
@@ -318,6 +373,9 @@ app.get("/api/challenges/mine", requireUser, (req, res) => ok(res, { challenges:
 // client. `?market=<id>` lets us count "who's watching" per market (presence).
 const sseClients = new Set();
 const presence = new Map(); // marketId -> viewer count
+const sseByIp = new Map(); // ip -> open connection count
+const MAX_SSE_TOTAL = 2000;
+const MAX_SSE_PER_IP = 12;
 
 function broadcastPresence() {
   const counts = {};
@@ -340,6 +398,11 @@ onEvent((evt) => {
 });
 
 app.get("/api/stream", (req, res) => {
+  const ip = req.ip || "anon";
+  // bound resource use: total + per-IP connection caps
+  if (sseClients.size >= MAX_SSE_TOTAL || (sseByIp.get(ip) || 0) >= MAX_SSE_PER_IP) {
+    return res.status(503).json({ error: "stream capacity reached — retry shortly" });
+  }
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -348,14 +411,17 @@ app.get("/api/stream", (req, res) => {
   });
   res.write(`retry: 3000\n\n`);
 
-  const marketId = req.query.market !== undefined && req.query.market !== "" ? Number(req.query.market) : null;
+  // only track presence for a real, existing market (ignore junk/NaN ids)
+  let marketId = req.query.market !== undefined && req.query.market !== "" ? Number(req.query.market) : null;
+  if (marketId != null && (!Number.isInteger(marketId) || !getMarket(marketId))) marketId = null;
+
   const client = { res, marketId };
   sseClients.add(client);
+  sseByIp.set(ip, (sseByIp.get(ip) || 0) + 1);
   if (marketId != null) {
     presence.set(marketId, (presence.get(marketId) || 0) + 1);
     broadcastPresence();
   }
-  // send a hello so the client knows it's live + current presence
   sseSend(res, { kind: "hello", ts: Date.now() });
 
   const ping = setInterval(() => res.write(`: ping\n\n`), 25000); // keep intermediaries from closing it
@@ -363,6 +429,8 @@ app.get("/api/stream", (req, res) => {
   req.on("close", () => {
     clearInterval(ping);
     sseClients.delete(client);
+    const n = (sseByIp.get(ip) || 1) - 1;
+    if (n <= 0) sseByIp.delete(ip); else sseByIp.set(ip, n);
     if (marketId != null) {
       presence.set(marketId, Math.max(0, (presence.get(marketId) || 1) - 1));
       broadcastPresence();

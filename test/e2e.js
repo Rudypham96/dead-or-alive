@@ -312,6 +312,53 @@ try {
     check("SSE streams a price update", got.includes("price"));
   }
 
+  // ===================== HARDENING / EDGE CASES =====================
+  cookie = "";
+  await api("POST", "/api/auth/dev", { username: "edge" });
+
+  // negative / zero / NaN amounts rejected
+  r = await api("POST", "/api/bets", { marketId: 3, side: "DEAD", amount: -50 });
+  check("negative bet amount rejected", r.status === 400);
+  r = await api("POST", "/api/bets", { marketId: 3, side: "DEAD", amount: 0 });
+  check("zero bet amount rejected", r.status === 400);
+  r = await api("POST", "/api/bets", { marketId: 3, side: "DEAD", amount: "abc" });
+  check("non-numeric bet amount rejected", r.status === 400);
+  r = await api("POST", "/api/bets", { marketId: 3, side: "SIDEWAYS", amount: 10 });
+  check("invalid side rejected", r.status === 400);
+
+  // balance can't go negative: faucet 1000, two 600 bets — second must fail, balance intact
+  r = await api("POST", "/api/bets", { marketId: 3, side: "DEAD", amount: 600 });
+  check("first 600 bet ok", r.status === 200 && r.data.balance === 400);
+  r = await api("POST", "/api/bets", { marketId: 3, side: "DEAD", amount: 600 });
+  check("second 600 bet rejected (no overdraft)", r.status === 400);
+  r = await api("GET", "/api/me");
+  check("balance not driven negative", r.data.user.balance === 400, "balance " + r.data.user.balance);
+
+  // resolution source URL sanitized: javascript: scheme dropped, https kept
+  r = await api("POST", "/api/admin/markets", { name: "SanitizeCo", category: "Education", death: 0.5, daysLeft: 50 }, { "x-admin-secret": ADMIN });
+  const sanId = r.data.market.id;
+  await api("POST", "/api/admin/resolve", { marketId: sanId, outcome: "DEAD", reason: "x", sourceUrl: "javascript:alert(document.cookie)" }, { "x-admin-secret": ADMIN });
+  r = await api("GET", "/api/markets/" + sanId);
+  check("javascript: source URL is dropped (no stored XSS)", r.data.market.resolutionSource === null, JSON.stringify(r.data.market.resolutionSource));
+  r = await api("POST", "/api/admin/markets", { name: "SanitizeCo2", category: "Education", death: 0.5, daysLeft: 50 }, { "x-admin-secret": ADMIN });
+  const sanId2 = r.data.market.id;
+  await api("POST", "/api/admin/resolve", { marketId: sanId2, outcome: "DEAD", reason: "x", sourceUrl: "https://example.com/ok" }, { "x-admin-secret": ADMIN });
+  r = await api("GET", "/api/markets/" + sanId2);
+  check("valid https source URL is kept", r.data.market.resolutionSource === "https://example.com/ok");
+
+  // wrong admin secret rejected (timing-safe path)
+  r = await api("POST", "/api/admin/resolve", { marketId: 4, outcome: "DEAD" }, { "x-admin-secret": "wrong" });
+  check("wrong admin secret rejected", r.status === 401);
+
+  // mutating endpoints require auth
+  cookie = "";
+  r = await api("POST", "/api/bets", { marketId: 4, side: "DEAD", amount: 10 });
+  check("bet requires auth", r.status === 401);
+  r = await api("GET", "/api/portfolio");
+  check("portfolio requires auth", r.status === 401);
+  r = await api("POST", "/api/orders", { marketId: 4, side: "DEAD", limitPrice: 0.5, stake: 10 });
+  check("order requires auth", r.status === 401);
+
   console.log(`\n${fail === 0 ? "ALL PASSED" : "FAILED"} — ${pass} passed, ${fail} failed\n`);
 } catch (e) {
   console.error("\nTest harness error:", e.message);

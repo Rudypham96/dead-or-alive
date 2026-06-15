@@ -170,7 +170,7 @@ function NotificationBell() {
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <button onClick={() => setOpen(o => !o)} title="Notifications" style={{ position: "relative", width: 38, height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
+      <button onClick={() => setOpen(o => !o)} title="Notifications" aria-label="Notifications" aria-expanded={open} style={{ position: "relative", width: 38, height: 38, borderRadius: 10, border: "1px solid var(--border)", background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none"><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 01-3.4 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
         {unread > 0 && (
           <span style={{ position: "absolute", top: -5, right: -5, minWidth: 17, height: 17, padding: "0 4px", borderRadius: 9, background: "var(--dead)", color: "white", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'JetBrains Mono', monospace", border: "2px solid var(--bg)" }}>{unread}</span>
@@ -534,6 +534,7 @@ function MarketCard({ market, onOpen, onQuickBet, onShare, viewMode }) {
             <button
               onClick={(e) => { e.stopPropagation(); onShare?.(m); }}
               title="Share"
+              aria-label={`Share ${m.name} market`}
               style={{ width: 24, height: 24, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", border: "1px solid var(--border)" }}
               onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; e.currentTarget.style.borderColor = "var(--border-strong)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.borderColor = "var(--border)"; }}
@@ -1029,7 +1030,7 @@ function ShareSheet({ share, onClose }) {
       <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 420, animation: "popIn 0.22s ease" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <span style={{ fontSize: 15, fontWeight: 600 }}>Share your bet</span>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, color: "var(--text-muted)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+          <button onClick={onClose} aria-label="Close" style={{ width: 30, height: 30, borderRadius: 8, color: "var(--text-muted)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
         </div>
         <ShareBetCard market={market} side={side} amt={amt}/>
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
@@ -1108,7 +1109,10 @@ function Toast({ toast }) {
   }
 
   return (
-    <div style={{
+    <div
+      role="status"
+      aria-live={toast.type === "error" ? "assertive" : "polite"}
+      style={{
       position: "fixed", bottom: 24, right: 24, zIndex: 100,
       background: "var(--surface)", border: "1px solid var(--border-strong)", borderLeft: `3px solid ${accent}`,
       borderRadius: 10, padding: "12px 16px", minWidth: 280, maxWidth: 360,
@@ -1228,7 +1232,7 @@ function NotificationBar({ onEnable, onDismiss }) {
       <span style={{ fontSize: 13, fontWeight: 500 }}>🔔 Get real-time alerts when your markets move. Enable notifications →</span>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <button onClick={onEnable} style={{ padding: "6px 14px", borderRadius: 8, background: "white", color: "#5B6BF5", fontWeight: 600, fontSize: 13 }}>Enable</button>
-        <button onClick={onDismiss} title="Dismiss" style={{ width: 30, height: 30, borderRadius: 8, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>✕</button>
+        <button onClick={onDismiss} title="Dismiss" aria-label="Dismiss" style={{ width: 30, height: 30, borderRadius: 8, color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>✕</button>
       </div>
     </div>
   );

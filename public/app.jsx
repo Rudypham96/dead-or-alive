@@ -490,6 +490,14 @@ function App() {
     return () => es.close();
   }, [route.name, route.id, syncMarketInPlace, onLiveTrade]);
 
+  // Escape closes the switch-to-live modal (keyboard accessibility)
+  useEffect(() => {
+    if (!switchLiveModal) return;
+    const h = (e) => { if (e.key === "Escape") setSwitchLiveModal(false); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [switchLiveModal]);
+
   const walletProps = { walletConnected, walletAddress, onConnect: handleConnectWallet };
 
   let page;
@@ -536,7 +544,7 @@ function App() {
       {showOnboarding && <OnboardingModal onFinish={finishOnboarding}/>}
       {switchLiveModal && (
         <div onClick={() => setSwitchLiveModal(false)} style={{ position: "fixed", inset: 0, zIndex: 250, background: "rgba(5,6,12,0.78)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 420, padding: 24 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" role="dialog" aria-modal="true" aria-label="Switch to live trading" style={{ width: "100%", maxWidth: 420, padding: 24 }}>
             <h3 className="font-display" style={{ margin: "0 0 8px", fontSize: 19, fontWeight: 700 }}>Switch to live trading?</h3>
             <p style={{ margin: "0 0 20px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6 }}>Real money will be used for all bets. Make sure your wallet is connected before placing live bets.</p>
             <div style={{ display: "flex", gap: 10 }}>

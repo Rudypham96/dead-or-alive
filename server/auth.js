@@ -12,7 +12,12 @@ import { db } from "./db.js";
 
 const JWT_SECRET = process.env.DOA_JWT_SECRET || "dev-only-secret-change-me";
 const FAUCET = Number(process.env.DOA_FAUCET ?? 1000); // test house credits for new accounts
-const ALLOW_DEV_LOGIN = process.env.DOA_ALLOW_DEV_LOGIN !== "0"; // on by default for local/dev
+// Dev login (wallet-less faucet accounts) is ON by default locally, but OFF by
+// default in production — it must be explicitly enabled with DOA_ALLOW_DEV_LOGIN=1.
+const ALLOW_DEV_LOGIN =
+  process.env.NODE_ENV === "production"
+    ? process.env.DOA_ALLOW_DEV_LOGIN === "1"
+    : process.env.DOA_ALLOW_DEV_LOGIN !== "0";
 const now = () => Date.now();
 
 export function buildSignMessage(address, nonce) {

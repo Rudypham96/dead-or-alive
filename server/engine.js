@@ -18,6 +18,21 @@ const now = () => Date.now();
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+// Only allow http(s) source links — blocks javascript:/data: stored-XSS via the
+// public resolution history page. Returns null for anything else.
+function sanitizeUrl(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().slice(0, 300);
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol === "http:" || u.protocol === "https:") return s;
+  } catch {
+    /* not a valid absolute URL */
+  }
+  return null;
+}
+
 export function getMarket(id) {
   return db.prepare("SELECT * FROM markets WHERE id = ?").get(id);
 }
@@ -46,11 +61,12 @@ export function placeBet(user, marketId, side, stakeRaw, paper = false) {
   const shares = stake / price;
 
   const tx = db.transaction(() => {
-    let balance = user.balance;
+    // Read balance FRESH inside the tx and write relatively — never trust the
+    // balance snapshot the auth middleware loaded at request entry.
     if (!paper) {
-      if (user.balance < stake) throw new Error("insufficient balance");
-      balance = round2(user.balance - stake);
-      db.prepare("UPDATE users SET balance = ? WHERE id = ?").run(balance, user.id);
+      const fresh = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id);
+      if (!fresh || fresh.balance < stake) throw new Error("insufficient balance");
+      db.prepare("UPDATE users SET balance = ROUND(balance - ?, 2) WHERE id = ?").run(stake, user.id);
     }
 
     const info = db
@@ -75,6 +91,7 @@ export function placeBet(user, marketId, side, stakeRaw, paper = false) {
     }
 
     const bet = db.prepare("SELECT * FROM bets WHERE id = ?").get(info.lastInsertRowid);
+    const balance = (db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id) || {}).balance;
     return { bet, balance };
   });
 
@@ -160,7 +177,7 @@ export function resolveMarket(marketId, outcomeRaw, reason = null, sourceUrl = n
   if (!market) throw new Error("market not found");
   if (market.status === "resolved") throw new Error("market already resolved");
   reason = reason ? String(reason).trim().slice(0, 500) : null;
-  sourceUrl = sourceUrl ? String(sourceUrl).trim().slice(0, 300) : null;
+  sourceUrl = sanitizeUrl(sourceUrl);
 
   const tx = db.transaction(() => {
     const openBets = db.prepare("SELECT * FROM bets WHERE market_id = ? AND status = 'open'").all(marketId);
@@ -262,7 +279,8 @@ export function createChallenge(user, marketId, side, stakeRaw) {
   if (!market || market.status !== "open") throw new Error("market not open");
 
   const tx = db.transaction(() => {
-    if (user.balance < stake) throw new Error("insufficient balance");
+    const fresh = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id);
+    if (!fresh || fresh.balance < stake) throw new Error("insufficient balance");
     db.prepare("UPDATE users SET balance = ROUND(balance - ?, 2) WHERE id = ?").run(stake, user.id);
     const info = db
       .prepare(
@@ -284,7 +302,11 @@ export function acceptChallenge(user, challengeId) {
   if (c.challenger_id === user.id) throw new Error("cannot accept your own challenge");
 
   const tx = db.transaction(() => {
-    if (user.balance < c.stake) throw new Error("insufficient balance");
+    // re-check the challenge is still open inside the tx (no double-accept)
+    const cur = db.prepare("SELECT status FROM challenges WHERE id = ?").get(c.id);
+    if (!cur || cur.status !== "open") throw new Error("challenge no longer open");
+    const fresh = db.prepare("SELECT balance FROM users WHERE id = ?").get(user.id);
+    if (!fresh || fresh.balance < c.stake) throw new Error("insufficient balance");
     db.prepare("UPDATE users SET balance = ROUND(balance - ?, 2) WHERE id = ?").run(c.stake, user.id);
     db.prepare("UPDATE challenges SET opponent_id = ?, status = 'active' WHERE id = ?").run(user.id, c.id);
     return db.prepare("SELECT * FROM challenges WHERE id = ?").get(c.id);

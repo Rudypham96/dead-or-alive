@@ -17,7 +17,7 @@ npm start
 No build step, no database setup, no API keys. `npm start` creates the SQLite file and seeds 120 markets on first run.
 
 ```bash
-npm test     # 60-check end-to-end suite against a throwaway DB
+npm test     # 73-check end-to-end suite against a throwaway DB
 ```
 
 Requires **Node 22.5+** (uses the built-in `node:sqlite` module — no native compilation, no `better-sqlite3`).
@@ -145,6 +145,16 @@ DOA_ADMIN_SECRET=<sha256-of-your-password>
 
 ---
 
+## Security & hardening
+
+- **Money integrity:** every balance debit re-reads the balance *inside* the transaction and writes relatively (`balance = balance - ?`) — no stale-snapshot overdraft, no negative balances. Verified by tests (two oversized bets, second rejected, balance intact).
+- **Production won't boot insecure:** with `NODE_ENV=production`, the server refuses to start if `DOA_JWT_SECRET` or `DOA_ADMIN_SECRET` is unset/default, or if dev login is enabled. Dev login defaults OFF in production.
+- **Admin:** secret compared with `crypto.timingSafeEqual`, only via the `x-admin-secret` header (never the query string, which leaks into logs).
+- **Stored-XSS guarded:** resolution source URLs are server-validated to `http(s)` only — `javascript:`/`data:` are dropped. (Client renders all user text as React text nodes, never `dangerouslySetInnerHTML`.)
+- **Rate limiting:** in-process per-IP/per-user limits on auth, admin, and money endpoints (bypassed under `NODE_ENV=test`).
+- **SSE bounded:** total and per-IP connection caps; presence only tracks real market ids.
+- **Accessibility:** site-wide `:focus-visible`, WCAG-AA contrast on muted text, `aria-label`s on icon buttons and money inputs, `aria-live` toast region, Escape-to-close + `role="dialog"` on the money modals.
+
 ## Environment variables
 
 | Var | Default | Purpose |
@@ -161,7 +171,7 @@ DOA_ADMIN_SECRET=<sha256-of-your-password>
 ## Known limitations (intentionally parked)
 
 - **House credits, not real money.** No deposit/withdrawal, no on-chain settlement, no smart contracts yet. The faucet exists so the loop is fully playable today.
-- **Money stored as floats.** Fine for a bootstrap; move to integer cents (or on-chain units) before real money.
+- **LAUNCH BLOCKER — money is stored as floats.** Balances/stakes/payouts are REAL dollars with consistent rounding, fine for a bootstrap, but a real-money book must use integer cents (or on-chain units) end-to-end to avoid sub-cent drift and reconciliation pain. This is the one hardening item deliberately left for the money-rail sprint (it touches every money line and is best done alongside Nick's contract work, which defines the real unit anyway). Do not flow real money until this is done.
 - **Price impact is a transparent nudge, not a true AMM.** No LMSR/CPMM. Limit orders fill against the line (house liquidity), not against each other — the order book shows real resting demand but there's no user-to-user matching yet. Good enough to make the market feel real; revisit when liquidity matters.
 - **Real-time is single-process.** The SSE event bus lives in one Node process. Fine for one server; scaling horizontally would need a shared pub/sub (Redis) so events fan out across instances.
 - **Paper bets don't move the shared line** (they would let virtual money distort a live market everyone sees) — they spend virtual funds and show in your portfolio only.

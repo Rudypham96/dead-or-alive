@@ -3,7 +3,25 @@
 
 ---
 
-## ⚡ UPDATE 2026-06-11 (latest) — IT'S LIVE & MULTIPLAYER NOW
+## ⚡ UPDATE 2026-06-11 (latest) — SECURITY + A11Y HARDENING PASS
+
+Ran two expert reviews (security + accessibility) and fixed the real findings. No new features — made what exists solid before anyone sees it. e2e now 73 checks, all passing.
+
+Security:
+- Money integrity: every debit (placeBet, createChallenge, acceptChallenge) now re-reads balance INSIDE the tx and writes relatively. The old `placeBet` did an absolute `SET balance = <stale - stake>` that could erase winnings or mint money. Fixed. Verified: two oversized bets, second rejected, no negative balance.
+- Production won't boot insecure: NODE_ENV=production refuses to start with a default/unset JWT or admin secret, or dev login on. Dev login defaults OFF in prod.
+- Admin secret: timingSafeEqual, header-only (dropped the query-string path that leaks into logs).
+- Stored-XSS guard: resolution source URLs validated server-side to http(s) only (javascript:/data: dropped).
+- Rate limiting (per-IP/user) on auth/admin/money routes; SSE connection caps; presence only tracks real market ids.
+
+Accessibility:
+- Site-wide :focus-visible (was missing entirely), WCAG-AA contrast fix on muted text (#6B7280 → #9CA3AF), aria-labels on icon buttons + all money inputs, aria-live toast region, Escape-to-close + role=dialog on the money modals.
+
+ONE THING DELIBERATELY DEFERRED (flagged to Rudy): money is stored as floats. For real money it must move to integer cents end-to-end — best done in the money-rail sprint with Nick (his contracts define the real unit). Marked a LAUNCH BLOCKER in README. Everything else from both reviews is fixed or documented.
+
+---
+
+## ⚡ UPDATE 2026-06-11 (earlier) — IT'S LIVE & MULTIPLAYER NOW
 
 Three more features. Tested (60-check e2e suite incl. an SSE round-trip, all passing) and verified across two browser tabs.
 

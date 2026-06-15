@@ -692,6 +692,8 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
           <div style={{ position: "relative" }}>
             <input
               type="number" min="2" max="98" step="1"
+              inputMode="numeric"
+              aria-label="Limit price in cents (2 to 98)"
               className="input font-mono"
               value={limitPct}
               onChange={(e) => setLimitPct(e.target.value)}
@@ -713,6 +715,8 @@ function BetTicket({ market, side, setSide, onConfirm, walletConnected, onConnec
           <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>$</span>
           <input
             type="number"
+            inputMode="decimal"
+            aria-label="Bet amount in US dollars"
             className="input font-mono"
             value={amt}
             onChange={(e) => setAmt(Math.max(0, +e.target.value || 0))}
@@ -819,6 +823,7 @@ function CommentsSection({ market }) {
           <div style={{ flex: 1 }}>
             <textarea
               className="input"
+              aria-label={`Add a comment on ${market.name}`}
               placeholder={`Share your take on ${market.name}…`}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -2186,6 +2191,12 @@ function ResolutionConsolePage() {
   };
 
   useEffect(() => { if (secret && !authed) tryAuth(secret); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    if (!vote) return;
+    const h = (e) => { if (e.key === "Escape" && !busy) setVote(null); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [vote, busy]);
 
   const confirmResolve = async () => {
     if (!vote) return;
@@ -2213,7 +2224,7 @@ function ResolutionConsolePage() {
           <h1 className="font-display" style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Resolution Console</h1>
         </div>
         <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 16px" }}>Committee access only. Enter the admin secret to resolve markets and execute payouts.</p>
-        <input type="password" className="input font-mono" placeholder="Admin secret" value={secretInput} onChange={(e) => setSecretInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && tryAuth(secretInput)} style={{ marginBottom: 12 }} />
+        <input type="password" aria-label="Admin secret" className="input font-mono" placeholder="Admin secret" value={secretInput} onChange={(e) => setSecretInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && tryAuth(secretInput)} style={{ marginBottom: 12 }} />
         <button className="btn primary" style={{ width: "100%", padding: 12 }} onClick={() => tryAuth(secretInput)}>Unlock console</button>
         <button onClick={() => social.navigate({ name: "markets" })} style={{ display: "block", width: "100%", textAlign: "center", marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>← Back to markets</button>
       </div>
@@ -2261,11 +2272,11 @@ function ResolutionConsolePage() {
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1.4fr", gap: 12, marginTop: 14 }}>
               <div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Company name</div>
-                <input className="input" placeholder="e.g. Stack Overflow" value={cName} onChange={(e) => setCName(e.target.value)}/>
+                <input className="input" aria-label="Company name" placeholder="e.g. Stack Overflow" value={cName} onChange={(e) => setCName(e.target.value)}/>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Category</div>
-                <select className="input" value={cCategory} onChange={(e) => setCCategory(e.target.value)}>
+                <select className="input" aria-label="Category" value={cCategory} onChange={(e) => setCCategory(e.target.value)}>
                   {CATEGORY_LIST.filter(c => c !== "All").map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
@@ -2273,11 +2284,11 @@ function ResolutionConsolePage() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
               <div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Starting DEAD odds (%)</div>
-                <input type="number" min="2" max="98" className="input font-mono" value={cDeath} onChange={(e) => setCDeath(e.target.value)}/>
+                <input type="number" min="2" max="98" aria-label="Starting DEAD odds percent" className="input font-mono" value={cDeath} onChange={(e) => setCDeath(e.target.value)}/>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Resolves in (days)</div>
-                <input type="number" min="1" max="2000" className="input font-mono" value={cDays} onChange={(e) => setCDays(e.target.value)}/>
+                <input type="number" min="1" max="2000" aria-label="Resolves in days" className="input font-mono" value={cDays} onChange={(e) => setCDays(e.target.value)}/>
               </div>
             </div>
             <button className="btn primary" disabled={creating || !cName.trim()} onClick={submitCreate} style={{ width: "100%", marginTop: 14, padding: 12, opacity: creating || !cName.trim() ? 0.6 : 1 }}>
@@ -2319,7 +2330,7 @@ function ResolutionConsolePage() {
 
       {vote && (
         <div onClick={() => !busy && setVote(null)} style={{ position: "fixed", inset: 0, zIndex: 200, background: "rgba(5,6,12,0.75)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "100%", maxWidth: 440, padding: 24 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" role="dialog" aria-modal="true" aria-label="Confirm resolution" style={{ width: "100%", maxWidth: 440, padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <span style={{ fontSize: 16, fontWeight: 600 }}>Confirm Resolution</span>
               <button onClick={() => !busy && setVote(null)} style={{ width: 30, height: 30, borderRadius: 8, color: "var(--text-muted)", border: "1px solid var(--border)" }}>✕</button>
@@ -2333,11 +2344,12 @@ function ResolutionConsolePage() {
             <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Resolution reason (public)</div>
             <textarea
               className="input" rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
+              aria-label="Resolution reason (public)"
               placeholder={vote.side === "DEAD" ? "e.g. Filed Chapter 11 bankruptcy on June 3, 2026." : "e.g. Resolution window ended with revenue above the collapse threshold."}
               style={{ resize: "vertical", marginBottom: 10, fontFamily: "inherit" }}
             />
             <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Source URL (public)</div>
-            <input className="input font-mono" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} placeholder="https://…" style={{ marginBottom: 14, fontSize: 12 }}/>
+            <input className="input font-mono" type="url" aria-label="Source URL (public)" value={sourceUrl} onChange={(e) => setSourceUrl(e.target.value)} placeholder="https://…" style={{ marginBottom: 14, fontSize: 12 }}/>
             <button className="btn primary" disabled={busy} style={{ width: "100%", padding: 13, opacity: busy ? 0.6 : 1, background: vote.side === "DEAD" ? "var(--dead)" : "var(--alive)", borderColor: vote.side === "DEAD" ? "var(--dead)" : "var(--alive)" }} onClick={confirmResolve}>
               {busy ? "Resolving…" : `Confirm — Resolve ${vote.side}`}
             </button>
